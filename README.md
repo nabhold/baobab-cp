@@ -36,28 +36,28 @@ If you are looking for:
 ## Architecture at a glance
 
 ```
-                     ┌────────────────────────────┐
-                     │        nabhold/shared        │
-                     │  canonical contracts (OpenAPI,│
+                     ┌────────────────────────────----┐
+                     │        nabhold/shared          │
+                     │  canonical contracts (OpenAPI, │
                      │  AsyncAPI, JSON Schema)        │
-                     └───────────────┬────────────┘
+                     └───────────────┬────────────----┘
                                      │ implements
-┌────────────────────────────────────▼────────────────────────────────────┐
+┌────────────────────────────────────▼────────────────────────────────────-┐
 │                              baobab-cp                                   │
 │                                                                          │
-│   API layer (REST)         Reconciler loop         Event outbox         │
-│   /v1/context/resolve      desired vs actual        → RabbitMQ          │
-│   /v1/tenants              → APISIX / Postgres                          │
-│   /v1/entitlements                                                      │
+│   API layer (REST)         Reconciler loop         Event outbox          │
+│   /v1/context/resolve      desired vs actual        → RabbitMQ           │
+│   /v1/tenants              → APISIX / Postgres                           │
+│   /v1/entitlements                                                       │
 │                                                                          │
-│                    PostgreSQL (authoritative)                           │
-└───────────┬──────────────────────────────────────────┬──────────────────┘
+│                    PostgreSQL (authoritative)                            │
+└───────────┬──────────────────────────────────────────┬──────────────────-┘
             │ resolves context for                     │ provisioned by
             ▼                                            ▼
-┌───────────────────────────┐                 ┌────────────────────────────┐
+┌───────────────────────────-┐                 ┌────────────────────────────-┐
 │ baobab-trade / baobab-erp  │                 │   nabhold/infrastructure    │
 │ baobab-pulse (consumers)   │                 │  Terraform · APISIX · RMQ   │
-└───────────────────────────┘                 └────────────────────────────┘
+└───────────────────────────-┘                 └────────────────────────────-┘
 ```
 
 See [ADR-0003](docs/adr/0003-multi-tenant-control-plane-architecture.md) for the full rationale, including why REST over gRPC for v1, why fail-closed context resolution is a contract not an implementation detail, and why a bespoke reconciler rather than a full Kubernetes operator at this stage.
