@@ -1,0 +1,48 @@
+package resolver
+
+import (
+	"testing"
+	"time"
+
+	"github.com/nabhold/baobab-cp/internal/domain"
+)
+
+func TestEngineRelocationPreservesCanonicalIdentity(t *testing.T) {
+	cutover := time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)
+	binding := domain.CapabilityBinding{
+		ID: "binding-warehouse", CapabilityKey: "warehouse.execution", EngineID: "idempiere",
+		EngineInstanceID: "ERP-AF-SOUTH-01", ScopeID: "tn_zuribeans", BindingMode: "PRIMARY",
+		Status: "ACTIVE", ContractVersion: "1.0.0", EffectiveFrom: cutover.Add(-time.Hour), Version: 7,
+	}
+	from := domain.EngineInstance{ID: "ERP-AF-SOUTH-01", EngineID: "idempiere", Status: "DRAINING", HealthStatus: "HEALTHY"}
+	to := domain.EngineInstance{ID: "ERP-AF-SOUTH-02", EngineID: "idempiere", Status: "ACTIVE", HealthStatus: "HEALTHY", EffectiveFrom: cutover.Add(-time.Minute)}
+	canonical := domain.ExternalReference{CanonicalEntityID: "ce_warehouse_immutable", EngineID: "idempiere", NativeType: "M_Warehouse", NativeID: "1000000", Status: "ACTIVE"}
+
+	plan, err := PlanEngineRelocation(binding, from, to, cutover)
+	if err != nil {
+		t.Fatalf("plan relocation: %v", err)
+	}
+	if plan.Previous.EngineInstanceID != "ERP-AF-SOUTH-01" || plan.Successor.EngineInstanceID != "ERP-AF-SOUTH-02" {
+		t.Fatalf("unexpected relocation plan: %#v", plan)
+	}
+	if plan.Previous.EffectiveTo == nil || !plan.Previous.EffectiveTo.Equal(plan.Successor.EffectiveFrom) {
+		t.Fatal("relocation must be temporally contiguous")
+	}
+	if canonical.CanonicalEntityID != "ce_warehouse_immutable" || canonical.NativeID != "1000000" {
+		t.Fatal("relocation changed canonical or native identity")
+	}
+}
+
+func TestEngineRelocationRejectsDifferentEngineOrFailedTarget(t *testing.T) {
+	cutover := time.Now().UTC()
+	binding := domain.CapabilityBinding{CapabilityKey: "warehouse.execution", EngineInstanceID: "ERP-AF-SOUTH-01"}
+	from := domain.EngineInstance{ID: "ERP-AF-SOUTH-01", EngineID: "idempiere"}
+	for _, target := range []domain.EngineInstance{
+		{ID: "WMS-AF-SOUTH-01", EngineID: "wms", Status: "ACTIVE", HealthStatus: "HEALTHY"},
+		{ID: "ERP-AF-SOUTH-02", EngineID: "idempiere", Status: "ACTIVE", HealthStatus: "FAILED"},
+	} {
+		if _, err := PlanEngineRelocation(binding, from, target, cutover); err == nil {
+			t.Fatalf("expected target rejection: %#v", target)
+		}
+	}
+}
