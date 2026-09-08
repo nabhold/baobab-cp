@@ -4,21 +4,12 @@ import (
 	"context"
 	"errors"
 	"sort"
+
+	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
 // CapabilityBinding represents the effective binding between a capability and a runtime engine instance.
-type CapabilityBinding struct {
-	ID               string `json:"id,omitempty"`
-	CapabilityKey    string `json:"capability_key,omitempty"`
-	EngineID         string `json:"engine_id,omitempty"`
-	EngineInstanceID string `json:"engine_instance_id,omitempty"`
-	ScopeID          string `json:"scope_id,omitempty"`
-	BindingMode      string `json:"binding_mode,omitempty"`
-	Priority         int    `json:"priority,omitempty"`
-	Status           string `json:"status,omitempty"`
-	ContractVersion  string `json:"contract_version,omitempty"`
-	Version          int64  `json:"version,omitempty"`
-}
+type CapabilityBinding = domain.CapabilityBinding
 
 // CapabilityResolutionQuery resolves a capability in the current trusted context.
 type CapabilityResolutionQuery struct {
