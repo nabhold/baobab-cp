@@ -23,18 +23,21 @@ type ResolutionResult struct {
 	Capability ResolvedCapability
 	Policy     PolicyDecision
 	Topology   EngineInstance
+	Trace      ResolutionTrace
 }
 
 // ResolutionPipeline composes the resolution stack into a single deterministic decision process.
 type ResolutionPipeline struct{}
 
 func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (ResolutionResult, error) {
+	trace := ResolutionTrace{CorrelationID: req.Context.CorrelationID, TenantID: req.Context.TenantID, CapabilityKey: "baobab_trade"}
 	if req.TenantID == "" && req.Context.TenantID == "" {
-		return ResolutionResult{}, errors.New("tenant context required")
+		return ResolutionResult{}, resolutionFailure(trace, errors.New("tenant context required"))
 	}
 	if req.Context.TenantID == "" {
 		req.Context.TenantID = req.TenantID
 	}
+	trace.TenantID = req.Context.TenantID
 
 	if req.Context.Provenance == nil {
 		req.Context.Provenance = map[string]ContextSource{}
@@ -46,8 +49,9 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		Candidates:        req.Candidates,
 	})
 	if err != nil {
-		return ResolutionResult{}, err
+		return ResolutionResult{}, resolutionFailure(trace, err)
 	}
+	trace.MappingID = mappingResult.Mapping.ID
 
 	capabilityResult, err := CapabilityResolverImpl{}.Resolve(ctx, CapabilityResolutionQuery{
 		CapabilityKey: "baobab_trade",
@@ -55,8 +59,10 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		Bindings:      req.Bindings,
 	})
 	if err != nil {
-		return ResolutionResult{}, err
+		return ResolutionResult{}, resolutionFailure(trace, err)
 	}
+	trace.BindingID = capabilityResult.BindingID
+	trace.EngineInstanceID = capabilityResult.EngineInstanceID
 
 	topologyResult, err := TopologyResolverImpl{}.Resolve(ctx, TopologyResolutionQuery{
 		Context:                  req.Context,
@@ -65,7 +71,7 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		At:                       req.Context.ResolvedAt,
 	})
 	if err != nil {
-		return ResolutionResult{}, err
+		return ResolutionResult{}, resolutionFailure(trace, err)
 	}
 
 	policyResult := PolicyChecker{}.Check(ctx, req.Context, CapabilityBinding{
@@ -77,8 +83,10 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		ContractVersion:  capabilityResult.ContractVersion,
 	})
 	if !policyResult.Allowed {
-		return ResolutionResult{}, errors.New(policyResult.Reason)
+		return ResolutionResult{}, resolutionFailure(trace, errors.New(policyResult.Reason))
 	}
+	trace.Outcome = "ROUTED"
+	trace.Reason = "active mapping and binding selected; policy allowed; engine instance eligible"
 
 	return ResolutionResult{
 		Context:    req.Context,
@@ -86,5 +94,6 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		Capability: capabilityResult,
 		Policy:     policyResult,
 		Topology:   topologyResult,
+		Trace:      trace,
 	}, nil
 }
