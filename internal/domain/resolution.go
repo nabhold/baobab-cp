@@ -12,39 +12,39 @@ var capabilityKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+
 type TrustLevel string
 
 const (
-	TrustUntrusted TrustLevel = "UNTRUSTED"
-	TrustVerified TrustLevel = "VERIFIED"
+	TrustUntrusted  TrustLevel = "UNTRUSTED"
+	TrustVerified   TrustLevel = "VERIFIED"
 	TrustAuthorised TrustLevel = "AUTHORISED"
-	TrustSystem TrustLevel = "SYSTEM"
+	TrustSystem     TrustLevel = "SYSTEM"
 )
 
 type ContextSource struct {
-	Source string `json:"source"`
+	Source     string     `json:"source"`
 	TrustLevel TrustLevel `json:"trust_level"`
-	Evidence string `json:"evidence,omitempty"`
+	Evidence   string     `json:"evidence,omitempty"`
 }
 
 // Context is an immutable, server-resolved operation scope. Distinct IDs are
 // deliberately separate: none is an alias for another.
 type Context struct {
-	ID string `json:"id,omitempty"`
-	PrincipalID string `json:"principal_id"`
-	TenantID string `json:"tenant_id"`
-	LegalEntityID string `json:"legal_entity_id,omitempty"`
-	DigitalEstateID string `json:"digital_estate_id,omitempty"`
-	DigitalPropertyID string `json:"digital_property_id,omitempty"`
-	ChannelID string `json:"channel_id,omitempty"`
-	MarketID string `json:"market_id,omitempty"`
-	Jurisdiction string `json:"jurisdiction,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
-	CurrencyCode string `json:"currency_code,omitempty"`
-	Locale string `json:"locale,omitempty"`
-	DeploymentRegion string `json:"deployment_region,omitempty"`
-	Environment string `json:"environment,omitempty"`
-	IsolationProfileID string `json:"isolation_profile_id,omitempty"`
-	CorrelationID string `json:"correlation_id"`
-	ResolvedAt time.Time `json:"resolved_at"`
-	Provenance map[string]ContextSource `json:"provenance"`
+	ID                 string                   `json:"id,omitempty"`
+	PrincipalID        string                   `json:"principal_id"`
+	TenantID           string                   `json:"tenant_id"`
+	LegalEntityID      string                   `json:"legal_entity_id,omitempty"`
+	DigitalEstateID    string                   `json:"digital_estate_id,omitempty"`
+	DigitalPropertyID  string                   `json:"digital_property_id,omitempty"`
+	ChannelID          string                   `json:"channel_id,omitempty"`
+	MarketID           string                   `json:"market_id,omitempty"`
+	Jurisdiction       string                   `json:"jurisdiction,omitempty"`
+	CountryCode        string                   `json:"country_code,omitempty"`
+	CurrencyCode       string                   `json:"currency_code,omitempty"`
+	Locale             string                   `json:"locale,omitempty"`
+	DeploymentRegion   string                   `json:"deployment_region,omitempty"`
+	Environment        string                   `json:"environment,omitempty"`
+	IsolationProfileID string                   `json:"isolation_profile_id,omitempty"`
+	CorrelationID      string                   `json:"correlation_id"`
+	ResolvedAt         time.Time                `json:"resolved_at"`
+	Provenance         map[string]ContextSource `json:"provenance"`
 }
 
 func (c Context) Validate() error {
@@ -63,42 +63,42 @@ func (c Context) Validate() error {
 }
 
 type IsolationProfile struct {
-	ID string `json:"id,omitempty"`
-	Name string `json:"name"`
-	Strategy string `json:"strategy"`
-	TenantScope string `json:"tenant_scope"`
+	ID               string `json:"id,omitempty"`
+	Name             string `json:"name"`
+	Strategy         string `json:"strategy"`
+	TenantScope      string `json:"tenant_scope"`
 	DataPartitioning string `json:"data_partitioning"`
-	IsDefault bool `json:"is_default"`
+	IsDefault        bool   `json:"is_default"`
 }
 
 type Engine struct {
-	ID string `json:"id,omitempty"`
-	Key string `json:"engine_key"`
-	Name string `json:"name"`
+	ID          string `json:"id,omitempty"`
+	Key         string `json:"engine_key"`
+	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Status string `json:"status"`
+	Status      string `json:"status"`
 }
 
 type EngineInstance struct {
-	ID string `json:"id,omitempty"`
-	EngineID string `json:"engine_id"`
-	Key string `json:"engine_instance_key,omitempty"`
-	Region string `json:"region"`
-	Environment string `json:"environment"`
-	IsolationProfileID string `json:"isolation_profile_id,omitempty"`
-	ResidencyRegion string `json:"residency_region,omitempty"`
-	Status string `json:"status"`
-	HealthStatus string `json:"health_status,omitempty"`
-	EffectiveFrom time.Time `json:"effective_from,omitempty"`
-	EffectiveTo *time.Time `json:"effective_to,omitempty"`
+	ID                 string     `json:"id,omitempty"`
+	EngineID           string     `json:"engine_id"`
+	Key                string     `json:"engine_instance_key,omitempty"`
+	Region             string     `json:"region"`
+	Environment        string     `json:"environment"`
+	IsolationProfileID string     `json:"isolation_profile_id,omitempty"`
+	ResidencyRegion    string     `json:"residency_region,omitempty"`
+	Status             string     `json:"status"`
+	HealthStatus       string     `json:"health_status,omitempty"`
+	EffectiveFrom      time.Time  `json:"effective_from,omitempty"`
+	EffectiveTo        *time.Time `json:"effective_to,omitempty"`
 }
 
 type Capability struct {
-	ID string `json:"id,omitempty"`
-	Key string `json:"capability_key"`
-	Name string `json:"name"`
+	ID          string `json:"id,omitempty"`
+	Key         string `json:"capability_key"`
+	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Status string `json:"status"`
+	Status      string `json:"status"`
 }
 
 func (c Capability) Validate() error {
@@ -109,56 +109,62 @@ func (c Capability) Validate() error {
 }
 
 type CapabilityBinding struct {
-	ID string `json:"id,omitempty"`
-	CapabilityID string `json:"capability_id,omitempty"`
-	CapabilityKey string `json:"capability_key,omitempty"`
-	EngineID string `json:"engine_id,omitempty"`
-	EngineInstanceID string `json:"engine_instance_id"`
-	ScopeID string `json:"scope_id"`
-	BindingMode string `json:"binding_mode"`
-	Priority int `json:"priority"`
-	Status string `json:"status"`
-	ContractVersion string `json:"contract_version"`
-	EffectiveFrom time.Time `json:"effective_from,omitempty"`
-	EffectiveTo *time.Time `json:"effective_to,omitempty"`
-	Configuration map[string]any `json:"configuration,omitempty"`
-	Version int64 `json:"version,omitempty"`
+	ID               string         `json:"id,omitempty"`
+	CapabilityID     string         `json:"capability_id,omitempty"`
+	CapabilityKey    string         `json:"capability_key,omitempty"`
+	EngineID         string         `json:"engine_id,omitempty"`
+	EngineInstanceID string         `json:"engine_instance_id"`
+	ScopeID          string         `json:"scope_id"`
+	BindingMode      string         `json:"binding_mode"`
+	Priority         int            `json:"priority"`
+	Status           string         `json:"status"`
+	ContractVersion  string         `json:"contract_version"`
+	EffectiveFrom    time.Time      `json:"effective_from,omitempty"`
+	EffectiveTo      *time.Time     `json:"effective_to,omitempty"`
+	Configuration    map[string]any `json:"configuration,omitempty"`
+	Version          int64          `json:"version,omitempty"`
 }
 
 func (b CapabilityBinding) Validate() error {
-	if b.CapabilityID == "" && b.CapabilityKey == "" { return errors.New("capability identity is required") }
-	if b.EngineInstanceID == "" || b.ScopeID == "" { return errors.New("engine_instance_id and scope_id are required") }
-	if b.EffectiveTo != nil && !b.EffectiveTo.After(b.EffectiveFrom) { return errors.New("effective_to must be after effective_from") }
+	if b.CapabilityID == "" && b.CapabilityKey == "" {
+		return errors.New("capability identity is required")
+	}
+	if b.EngineInstanceID == "" || b.ScopeID == "" {
+		return errors.New("engine_instance_id and scope_id are required")
+	}
+	if b.EffectiveTo != nil && !b.EffectiveTo.After(b.EffectiveFrom) {
+		return errors.New("effective_to must be after effective_from")
+	}
 	return nil
 }
 
 type MappingScope struct {
-	ID string `json:"id,omitempty"`
-	TenantID string `json:"tenant_id,omitempty"`
-	LegalEntityID string `json:"legal_entity_id,omitempty"`
-	MarketID string `json:"market_id,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
-	DigitalEstateID string `json:"digital_estate_id,omitempty"`
+	ID                string `json:"id,omitempty"`
+	TenantID          string `json:"tenant_id,omitempty"`
+	LegalEntityID     string `json:"legal_entity_id,omitempty"`
+	MarketID          string `json:"market_id,omitempty"`
+	CountryCode       string `json:"country_code,omitempty"`
+	DigitalEstateID   string `json:"digital_estate_id,omitempty"`
 	DigitalPropertyID string `json:"digital_property_id,omitempty"`
-	ChannelID string `json:"channel_id,omitempty"`
-	CurrencyCode string `json:"currency_code,omitempty"`
-	Locale string `json:"locale,omitempty"`
-	Environment string `json:"environment,omitempty"`
-	EngineID string `json:"engine_id,omitempty"`
-	EngineInstanceID string `json:"engine_instance_id,omitempty"`
-	EntityType string `json:"entity_type,omitempty"`
+	ChannelID         string `json:"channel_id,omitempty"`
+	CurrencyCode      string `json:"currency_code,omitempty"`
+	Locale            string `json:"locale,omitempty"`
+	Environment       string `json:"environment,omitempty"`
+	EngineID          string `json:"engine_id,omitempty"`
+	EngineInstanceID  string `json:"engine_instance_id,omitempty"`
+	EntityType        string `json:"entity_type,omitempty"`
 }
 
 type ExternalReference struct {
-	ID string `json:"id,omitempty"`
-	CanonicalEntityID string `json:"canonical_entity_id"`
-	EngineID string `json:"engine_id"`
-	EngineInstanceID string `json:"engine_instance_id,omitempty"`
-	NativeType string `json:"native_type"`
-	NativeID string `json:"native_id"`
-	ExternalURL string `json:"external_url,omitempty"`
-	Status string `json:"status"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	ID                string         `json:"id,omitempty"`
+	CanonicalEntityID string         `json:"canonical_entity_id"`
+	EngineID          string         `json:"engine_id"`
+	EngineInstanceID  string         `json:"engine_instance_id,omitempty"`
+	NativeType        string         `json:"native_type"`
+	NativeID          string         `json:"native_id"`
+	ExternalURL       string         `json:"external_url,omitempty"`
+	Status            string         `json:"status"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }
 
 func (r ExternalReference) Validate() error {
