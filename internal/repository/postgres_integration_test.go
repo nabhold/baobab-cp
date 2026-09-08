@@ -68,8 +68,8 @@ func TestPostgresCapabilityBindingExclusionConstraintFires(t *testing.T) {
 	}{
 		{`INSERT INTO capability.capability(capability_id, code, name) VALUES ($1,'test.exclusion.capability','Test Capability')`, []any{capabilityID}},
 		{`INSERT INTO topology.engine(engine_id, code, name) VALUES ($1,'test-exclusion-engine','Test Engine')`, []any{engineID}},
-		{`INSERT INTO topology.engine_instance(engine_instance_id, engine_id, region, environment, status) VALUES ($1,$2,'af-south-1','production','active')`, []any{instanceA, engineID}},
-		{`INSERT INTO topology.engine_instance(engine_instance_id, engine_id, region, environment, status) VALUES ($1,$2,'af-south-1','production','active')`, []any{instanceB, engineID}},
+		{`INSERT INTO topology.engine_instance(engine_instance_id, engine_id, region, environment, status) VALUES ($1,$2,'af-south-1','production','ACTIVE')`, []any{instanceA, engineID}},
+		{`INSERT INTO topology.engine_instance(engine_instance_id, engine_id, region, environment, status) VALUES ($1,$2,'af-south-1','production','ACTIVE')`, []any{instanceB, engineID}},
 		{`INSERT INTO mapping.mapping_scope(mapping_scope_id, tenant_id, entity_type) VALUES ($1,'tenant-exclusion-test','PRODUCT')`, []any{scopeID}},
 	}
 	for _, f := range fixtures {
