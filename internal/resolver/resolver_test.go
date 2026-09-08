@@ -37,14 +37,17 @@ func TestScopeMatcherPrefersMoreSpecificMatch(t *testing.T) {
 func TestContextResolverMergesEvidenceAndTrust(t *testing.T) {
 	resolver := ContextResolverImpl{}
 	evidence := ResolutionEvidence{
+		PrincipalID:   "baobab-trade",
 		TenantID:      "tenant-123",
 		LegalEntityID: "legal-456",
 		MarketID:      "market-789",
 		CountryCode:   "ZA",
 		CurrencyCode:  "ZAR",
 		Locale:        "en-ZA",
+		CorrelationID: "correlation-123",
 		Provenance: map[string]ContextSource{
 			"tenant": {Source: "authn", TrustLevel: TrustAuthorised, Evidence: "jwt-subject"},
+			"principal": {Source: "authn", TrustLevel: TrustAuthorised, Evidence: "jwt-subject"},
 		},
 	}
 
