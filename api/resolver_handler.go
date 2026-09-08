@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/nabhold/baobab-cp/internal/auth"
-	"github.com/nabhold/baobab-cp/internal/domain"
-	"github.com/nabhold/baobab-cp/internal/resolver"
 	"github.com/nabhold/baobab-cp/internal/service"
 )
 
@@ -17,11 +15,7 @@ type ResolverHandler struct {
 }
 
 type resolverRequest struct {
-	TenantID        string                       `json:"tenant_id"`
-	Context         resolver.Context             `json:"context"`
-	Mappings        []domain.Mapping             `json:"mappings"`
-	Bindings        []resolver.CapabilityBinding `json:"bindings"`
-	EngineInstances []resolver.EngineInstance    `json:"engine_instances"`
+	TenantID string `json:"tenant_id"`
 }
 
 func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
@@ -31,19 +25,18 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req resolverRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		problem(w, r, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
 	principal, ok := auth.PrincipalFromContext(r.Context())
-	if !ok || principal.ActorType != "workload" {
+	if !ok || principal.ActorType != "workload" || !principal.HasScope("context:resolve") {
 		problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "verified workload identity is required", false)
 		return
 	}
 	requestedTenant := req.TenantID
-	if requestedTenant == "" {
-		requestedTenant = req.Context.TenantID
-	}
 	if requestedTenant != "" && requestedTenant != principal.TenantID {
 		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "requested tenant does not match verified workload identity", false)
 		return
@@ -56,11 +49,8 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(operationCtx)
 
 	result, err := h.Service.Resolve(operationCtx, service.ResolutionRequest{
-		TenantID:        trustedContext.TenantID,
-		Context:         trustedContext,
-		Mappings:        req.Mappings,
-		Bindings:        req.Bindings,
-		EngineInstances: req.EngineInstances,
+		TenantID: trustedContext.TenantID,
+		Context:  trustedContext,
 	})
 	if err != nil {
 		problem(w, r, http.StatusBadRequest, "RESOLUTION_FAILED", err.Error(), false)
