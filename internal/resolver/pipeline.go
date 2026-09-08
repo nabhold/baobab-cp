@@ -59,8 +59,10 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 	}
 
 	topologyResult, err := TopologyResolverImpl{}.Resolve(ctx, TopologyResolutionQuery{
-		Context:         req.Context,
-		EngineInstances: req.EngineInstances,
+		Context:                  req.Context,
+		SelectedEngineInstanceID: capabilityResult.EngineInstanceID,
+		EngineInstances:          req.EngineInstances,
+		At:                       req.Context.ResolvedAt,
 	})
 	if err != nil {
 		return ResolutionResult{}, err
