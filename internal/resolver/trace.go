@@ -3,7 +3,7 @@ package resolver
 import "fmt"
 
 type ResolutionTrace struct {
-	CorrelationID   string
+	CorrelationID    string
 	TenantID         string
 	CapabilityKey    string
 	MappingID        string
