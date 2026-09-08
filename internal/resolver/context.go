@@ -47,6 +47,9 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 	if evidence.TenantID == "" {
 		return Context{}, errors.New("tenant_id is required")
 	}
+	if evidence.PrincipalID == "" || evidence.CorrelationID == "" {
+		return Context{}, errors.New("principal_id and correlation_id are required")
+	}
 	if evidence.Provenance == nil {
 		evidence.Provenance = map[string]ContextSource{}
 	}
@@ -56,7 +59,7 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 			evidence.Provenance[key] = value
 		}
 	}
-	return Context{
+	resolved := Context{
 		PrincipalID:   evidence.PrincipalID,
 		TenantID:      evidence.TenantID,
 		LegalEntityID: evidence.LegalEntityID,
@@ -67,7 +70,11 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 		CorrelationID: evidence.CorrelationID,
 		ResolvedAt:    time.Now().UTC(),
 		Provenance:    evidence.Provenance,
-	}, nil
+	}
+	if err := resolved.Validate(); err != nil {
+		return Context{}, err
+	}
+	return resolved, nil
 }
 
 // ScopeValues represents a single logical scope dimension payload.

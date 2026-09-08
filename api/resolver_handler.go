@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/nabhold/baobab-cp/internal/auth"
 	"github.com/nabhold/baobab-cp/internal/domain"
@@ -34,18 +35,29 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
 		return
 	}
-	if req.TenantID == "" && req.Context.TenantID == "" {
-		problem(w, r, http.StatusBadRequest, "TENANT_REQUIRED", "tenant_id is required", false)
+	principal, ok := auth.PrincipalFromContext(r.Context())
+	if !ok || principal.ActorType != "workload" {
+		problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "verified workload identity is required", false)
 		return
 	}
-	if principal, ok := auth.PrincipalFromContext(r.Context()); ok && principal.ActorType == "workload" {
-		req.TenantID = principal.TenantID
-		req.Context.TenantID = principal.TenantID
+	requestedTenant := req.TenantID
+	if requestedTenant == "" {
+		requestedTenant = req.Context.TenantID
 	}
+	if requestedTenant != "" && requestedTenant != principal.TenantID {
+		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "requested tenant does not match verified workload identity", false)
+		return
+	}
+	operationCtx, trustedContext, err := auth.NewOperationContext(r.Context(), principal, correlationID(r), time.Now())
+	if err != nil {
+		problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
+		return
+	}
+	r = r.WithContext(operationCtx)
 
-	result, err := h.Service.Resolve(r.Context(), service.ResolutionRequest{
-		TenantID:        req.TenantID,
-		Context:         req.Context,
+	result, err := h.Service.Resolve(operationCtx, service.ResolutionRequest{
+		TenantID:        trustedContext.TenantID,
+		Context:         trustedContext,
 		Mappings:        req.Mappings,
 		Bindings:        req.Bindings,
 		EngineInstances: req.EngineInstances,

@@ -8,12 +8,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/nabhold/baobab-cp/internal/auth"
 	"github.com/nabhold/baobab-cp/internal/domain"
 	"github.com/nabhold/baobab-cp/internal/resolver"
 	"github.com/nabhold/baobab-cp/internal/service"
 )
 
-func TestResolverHandlerResolve(t *testing.T) {
+func TestResolverHandlerDoesNotTrustCallerBusinessContext(t *testing.T) {
 	serviceInst := service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}
 	handler := ResolverHandler{Service: serviceInst}
 
@@ -65,15 +66,17 @@ func TestResolverHandlerResolve(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader(payload))
-	req = req.WithContext(context.Background())
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123"}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000001")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
 	w := httptest.NewRecorder()
 
 	handler.Resolve(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected fail-closed 400, got %d body=%s", w.Code, w.Body.String())
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("tenant-123")) {
-		t.Fatalf("expected tenant in response, got %s", w.Body.String())
+	if !bytes.Contains(w.Body.Bytes(), []byte("market or country context required")) {
+		t.Fatalf("caller-provided market was unexpectedly trusted: %s", w.Body.String())
 	}
 }
 
@@ -83,8 +86,21 @@ func TestResolverHandlerRejectsBadInput(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	handler.Resolve(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestResolverHandlerRejectsTenantSpoofing(t *testing.T) {
+	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-attacker"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-authorised", ClientID: "baobab-trade", TokenID: "token-123"}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("TENANT_CONTEXT_MISMATCH")) {
+		t.Fatalf("expected fail-closed tenant mismatch, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
