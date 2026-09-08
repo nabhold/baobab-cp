@@ -60,7 +60,7 @@ func resilientResolutionRequest() ResolutionRequest {
 	now := time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC)
 	return ResolutionRequest{
 		TenantID: "tn_zuribeans",
-		Context:  Context{TenantID: "tn_zuribeans", ResolvedAt: now},
+		Context:  Context{TenantID: "tn_zuribeans", CountryCode: "ZA", ResolvedAt: now},
 		Candidates: []domain.Mapping{{
 			ID: "mapping-1", MappingType: "IDENTITY", ResolutionMode: "SINGLE", CanonicalEntityID: "tn_zuribeans",
 			TargetCanonicalEntityID: "entity-1", ScopeID: "tn_zuribeans", Direction: "BIDIRECTIONAL",
