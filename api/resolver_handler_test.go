@@ -14,7 +14,7 @@ import (
 	"github.com/nabhold/baobab-cp/internal/service"
 )
 
-func TestResolverHandlerDoesNotTrustCallerBusinessContext(t *testing.T) {
+func TestResolverHandlerRejectsCallerSuppliedRegistryState(t *testing.T) {
 	serviceInst := service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}
 	handler := ResolverHandler{Service: serviceInst}
 
@@ -66,7 +66,7 @@ func TestResolverHandlerDoesNotTrustCallerBusinessContext(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader(payload))
-	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123"}
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
 	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000001")
 	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
 	w := httptest.NewRecorder()
@@ -75,8 +75,8 @@ func TestResolverHandlerDoesNotTrustCallerBusinessContext(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected fail-closed 400, got %d body=%s", w.Code, w.Body.String())
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("market or country context required")) {
-		t.Fatalf("caller-provided market was unexpectedly trusted: %s", w.Body.String())
+	if !bytes.Contains(w.Body.Bytes(), []byte("INVALID_REQUEST")) {
+		t.Fatalf("caller-supplied registry state was not rejected: %s", w.Body.String())
 	}
 }
 
@@ -94,13 +94,37 @@ func TestResolverHandlerRejectsBadInput(t *testing.T) {
 func TestResolverHandlerRejectsTenantSpoofing(t *testing.T) {
 	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
 	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-attacker"}`)))
-	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-authorised", ClientID: "baobab-trade", TokenID: "token-123"}
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-authorised", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
 	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
 	w := httptest.NewRecorder()
 
 	handler.Resolve(w, req)
 	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("TENANT_CONTEXT_MISMATCH")) {
 		t.Fatalf("expected fail-closed tenant mismatch, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestResolverHandlerRejectsNativeIDInjection(t *testing.T) {
+	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","native_id":"1000000"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+	handler.Resolve(w, req)
+	if w.Code != http.StatusBadRequest || !bytes.Contains(w.Body.Bytes(), []byte("INVALID_REQUEST")) {
+		t.Fatalf("expected native ID injection rejection, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestResolverHandlerRejectsAuthorizationBypass(t *testing.T) {
+	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", TokenID: "token-123"}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+	handler.Resolve(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected missing-scope rejection, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
