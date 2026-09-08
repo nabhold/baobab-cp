@@ -4,83 +4,162 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
 
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
-// MappingResolutionQuery resolves a canonical mapping within a trusted runtime context.
+var ErrMappingAmbiguous = errors.New("mapping is ambiguous")
+var ErrReverseMappingUnresolved = errors.New("reverse mapping unresolved")
+
 type MappingResolutionQuery struct {
 	CanonicalEntityID string
 	Context           Context
 	Candidates        []domain.Mapping
+	Scopes            map[string]domain.MappingScope
+	At                time.Time
 }
 
-// ResolvedMapping is the chosen mapping together with the specificity score derived from the context scope.
+type ReverseMappingResolutionQuery struct {
+	ExternalReferenceID string
+	Context             Context
+	Candidates          []domain.Mapping
+	Scopes              map[string]domain.MappingScope
+	At                  time.Time
+}
+
 type ResolvedMapping struct {
 	Mapping     domain.Mapping
 	Specificity int
 }
 
-// MappingResolverImpl resolves a mapping candidate list by filtering to active, valid mappings and selecting the highest specificity score.
+type QuarantineDecision struct {
+	Quarantined         bool
+	Reason              string
+	ExternalReferenceID string
+	CorrelationID       string
+}
+
 type MappingResolverImpl struct{}
 
 func (MappingResolverImpl) Resolve(_ context.Context, q MappingResolutionQuery) (ResolvedMapping, error) {
 	if q.CanonicalEntityID == "" {
 		return ResolvedMapping{}, errors.New("canonical_entity_id is required")
 	}
-	if len(q.Candidates) == 0 {
+	return resolveMapping(q.Context, q.Candidates, q.Scopes, q.At, func(mapping domain.Mapping) bool {
+		return mapping.CanonicalEntityID == q.CanonicalEntityID &&
+			(mapping.Direction == "BIDIRECTIONAL" || mapping.Direction == "CANONICAL_TO_EXTERNAL" || mapping.Direction == "SOURCE_TO_TARGET")
+	})
+}
+
+func (MappingResolverImpl) ResolveReverse(_ context.Context, q ReverseMappingResolutionQuery) (ResolvedMapping, QuarantineDecision, error) {
+	if q.ExternalReferenceID == "" {
+		return ResolvedMapping{}, QuarantineDecision{}, errors.New("external_reference_id is required")
+	}
+	resolved, err := resolveMapping(q.Context, q.Candidates, q.Scopes, q.At, func(mapping domain.Mapping) bool {
+		return mapping.ExternalReferenceID == q.ExternalReferenceID &&
+			(mapping.Direction == "BIDIRECTIONAL" || mapping.Direction == "EXTERNAL_TO_CANONICAL")
+	})
+	if err != nil {
+		return ResolvedMapping{}, QuarantineDecision{Quarantined: true, Reason: err.Error(), ExternalReferenceID: q.ExternalReferenceID, CorrelationID: q.Context.CorrelationID}, ErrReverseMappingUnresolved
+	}
+	return resolved, QuarantineDecision{}, nil
+}
+
+type rankedMapping struct {
+	mapping     domain.Mapping
+	specificity int
+}
+
+func resolveMapping(ctx Context, candidates []domain.Mapping, scopes map[string]domain.MappingScope, at time.Time, matches func(domain.Mapping) bool) (ResolvedMapping, error) {
+	if len(candidates) == 0 {
 		return ResolvedMapping{}, errors.New("mapping not found")
 	}
-
-	eligible := make([]domain.Mapping, 0, len(q.Candidates))
-	for _, m := range q.Candidates {
-		if m.CanonicalEntityID != q.CanonicalEntityID {
+	if at.IsZero() {
+		at = ctx.ResolvedAt
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	eligible := make([]rankedMapping, 0, len(candidates))
+	for _, mapping := range candidates {
+		if !matches(mapping) || mapping.Status != "ACTIVE" || mapping.Confidence == "REJECTED" {
 			continue
 		}
-		if m.Status != "ACTIVE" {
+		if err := mapping.Validate(); err != nil {
 			continue
 		}
-		if err := m.Validate(); err != nil {
+		from, _ := time.Parse(time.RFC3339, mapping.EffectiveFrom)
+		if at.Before(from) {
 			continue
 		}
-		eligible = append(eligible, m)
+		if mapping.EffectiveTo != "" {
+			to, _ := time.Parse(time.RFC3339, mapping.EffectiveTo)
+			if !at.Before(to) {
+				continue
+			}
+		}
+		specificity := legacyScopeSpecificity(ctx, mapping.ScopeID)
+		if len(scopes) > 0 {
+			scope, ok := scopes[mapping.ScopeID]
+			if !ok {
+				continue
+			}
+			match := DefaultScopeMatcher{}.Match(ctx, scopeValues(scope))
+			if !match.Compatible {
+				continue
+			}
+			specificity = match.Specificity
+		}
+		eligible = append(eligible, rankedMapping{mapping: mapping, specificity: specificity})
 	}
 	if len(eligible) == 0 {
 		return ResolvedMapping{}, errors.New("mapping not found")
 	}
-
-	for i := range eligible {
-		sel := eligible[i]
-		if sel.ScopeID == q.Context.TenantID {
-			sel.ResolutionPriority += 20
-		}
-		if sel.ScopeID == q.Context.LegalEntityID {
-			sel.ResolutionPriority += 15
-		}
-		if sel.ScopeID == q.Context.MarketID {
-			sel.ResolutionPriority += 10
-		}
-		if sel.ScopeID == q.Context.CountryCode {
-			sel.ResolutionPriority += 5
-		}
-		eligible[i] = sel
-	}
-
 	sort.Slice(eligible, func(i, j int) bool {
-		if eligible[i].ResolutionPriority != eligible[j].ResolutionPriority {
-			return eligible[i].ResolutionPriority > eligible[j].ResolutionPriority
+		if eligible[i].specificity != eligible[j].specificity {
+			return eligible[i].specificity > eligible[j].specificity
 		}
-		if eligible[i].Confidence != eligible[j].Confidence {
-			return confidenceRank(eligible[i].Confidence) > confidenceRank(eligible[j].Confidence)
+		if eligible[i].mapping.ResolutionPriority != eligible[j].mapping.ResolutionPriority {
+			return eligible[i].mapping.ResolutionPriority > eligible[j].mapping.ResolutionPriority
 		}
-		return eligible[i].ID > eligible[j].ID
+		if confidenceRank(eligible[i].mapping.Confidence) != confidenceRank(eligible[j].mapping.Confidence) {
+			return confidenceRank(eligible[i].mapping.Confidence) > confidenceRank(eligible[j].mapping.Confidence)
+		}
+		return eligible[i].mapping.ID < eligible[j].mapping.ID
 	})
+	if len(eligible) > 1 && sameMappingRank(eligible[0], eligible[1]) {
+		return ResolvedMapping{}, ErrMappingAmbiguous
+	}
+	return ResolvedMapping{Mapping: eligible[0].mapping, Specificity: eligible[0].specificity}, nil
+}
 
-	winner := eligible[0]
-	return ResolvedMapping{
-		Mapping:     winner,
-		Specificity: winner.ResolutionPriority,
-	}, nil
+func sameMappingRank(left, right rankedMapping) bool {
+	return left.specificity == right.specificity && left.mapping.ResolutionPriority == right.mapping.ResolutionPriority && confidenceRank(left.mapping.Confidence) == confidenceRank(right.mapping.Confidence)
+}
+
+func scopeValues(scope domain.MappingScope) ScopeValues {
+	return ScopeValues{
+		TenantID: scope.TenantID, LegalEntityID: scope.LegalEntityID, MarketID: scope.MarketID,
+		CountryCode: scope.CountryCode, DigitalEstateID: scope.DigitalEstateID, DigitalPropertyID: scope.DigitalPropertyID,
+		ChannelID: scope.ChannelID, CurrencyCode: scope.CurrencyCode, Locale: scope.Locale, Environment: scope.Environment,
+		EngineID: scope.EngineID, EngineInstanceID: scope.EngineInstanceID,
+	}
+}
+
+func legacyScopeSpecificity(ctx Context, scopeID string) int {
+	switch scopeID {
+	case ctx.TenantID:
+		return 20
+	case ctx.LegalEntityID:
+		return 15
+	case ctx.MarketID:
+		return 10
+	case ctx.CountryCode:
+		return 5
+	default:
+		return 0
+	}
 }
 
 func confidenceRank(confidence string) int {
