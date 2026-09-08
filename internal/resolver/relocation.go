@@ -10,7 +10,7 @@ import (
 // RelocationPlan is an atomic topology transition: the prior binding is
 // closed at CutoverAt and its successor begins at the same instant.
 type RelocationPlan struct {
-	Previous domain.CapabilityBinding
+	Previous  domain.CapabilityBinding
 	Successor domain.CapabilityBinding
 	CutoverAt time.Time
 }
