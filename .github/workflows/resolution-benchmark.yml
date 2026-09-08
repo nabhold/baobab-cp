@@ -1,0 +1,23 @@
+name: Resolution Benchmark
+
+on:
+  pull_request:
+    paths:
+      - "internal/resolver/**"
+      - ".github/workflows/resolution-benchmark.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Measure resolver latency and throughput
+        run: go test ./internal/resolver -run '^$' -bench '^BenchmarkMappingResolution100Candidates$' -benchmem -count=5
