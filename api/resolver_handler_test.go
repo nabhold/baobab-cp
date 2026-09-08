@@ -14,7 +14,7 @@ import (
 	"github.com/nabhold/baobab-cp/internal/service"
 )
 
-func TestResolverHandlerResolve(t *testing.T) {
+func TestResolverHandlerDoesNotTrustCallerBusinessContext(t *testing.T) {
 	serviceInst := service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}
 	handler := ResolverHandler{Service: serviceInst}
 
@@ -72,11 +72,11 @@ func TestResolverHandlerResolve(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	handler.Resolve(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected fail-closed 400, got %d body=%s", w.Code, w.Body.String())
 	}
-	if !bytes.Contains(w.Body.Bytes(), []byte("tenant-123")) {
-		t.Fatalf("expected tenant in response, got %s", w.Body.String())
+	if !bytes.Contains(w.Body.Bytes(), []byte("market or country context required")) {
+		t.Fatalf("caller-provided market was unexpectedly trusted: %s", w.Body.String())
 	}
 }
 
