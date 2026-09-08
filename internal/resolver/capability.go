@@ -23,7 +23,7 @@ type CapabilityResolutionQuery struct {
 
 // ResolvedCapability is the selected capability binding and target engine.
 type ResolvedCapability struct {
-	BindingID       string
+	BindingID        string
 	CapabilityKey    string
 	BindingMode      string
 	EngineID         string
