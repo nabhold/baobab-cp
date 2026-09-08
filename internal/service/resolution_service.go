@@ -26,6 +26,7 @@ type ResolutionResult struct {
 	Capability resolver.ResolvedCapability
 	Policy     resolver.PolicyDecision
 	Topology   resolver.EngineInstance
+	Trace      resolver.ResolutionTrace
 }
 
 // ResolutionService exposes the composed resolver pipeline as a service interface.
@@ -80,5 +81,6 @@ func (s ResolutionService) Resolve(ctx context.Context, req ResolutionRequest) (
 		Capability: pipelineResult.Capability,
 		Policy:     pipelineResult.Policy,
 		Topology:   pipelineResult.Topology,
+		Trace:      pipelineResult.Trace,
 	}, nil
 }
