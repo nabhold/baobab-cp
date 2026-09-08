@@ -13,8 +13,8 @@ for file in "${required_files[@]}"; do
   test -s "$file" || { echo "missing readiness evidence: $file" >&2; exit 1; }
 done
 
-grep -q 'name: "baobab-platform-resolution"' contracts.lock.yaml
-grep -q 'version: "1.0.0"' contracts.lock.yaml
+grep -Eq 'name:[[:space:]]*"?baobab-platform-resolution"?$' contracts.lock.yaml
+grep -Eq 'version:[[:space:]]*"?1\.0\.0"?$' contracts.lock.yaml
 grep -q 'capability_binding_primary_excl' internal/store/postgres/migrations/000024_resolution_spine_invariants.sql
 grep -q 'canonical_mapping_source_type_active_excl' internal/store/postgres/migrations/000024_resolution_spine_invariants.sql
 
