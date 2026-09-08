@@ -79,12 +79,18 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 
 // ScopeValues represents a single logical scope dimension payload.
 type ScopeValues struct {
-	TenantID      string
-	LegalEntityID string
-	MarketID      string
-	CountryCode   string
-	CurrencyCode  string
-	Locale        string
+	TenantID          string
+	LegalEntityID     string
+	MarketID          string
+	CountryCode       string
+	DigitalEstateID   string
+	DigitalPropertyID string
+	ChannelID         string
+	CurrencyCode      string
+	Locale            string
+	Environment       string
+	EngineID          string
+	EngineInstanceID  string
 }
 
 // ScopeMatch is the result of comparing a context against a scope.
@@ -114,8 +120,12 @@ func (DefaultScopeMatcher) Match(ctx Context, scope ScopeValues) ScopeMatch {
 		{name: "legal_entity", value: ctx.LegalEntityID, want: scope.LegalEntityID},
 		{name: "market", value: ctx.MarketID, want: scope.MarketID},
 		{name: "country", value: ctx.CountryCode, want: scope.CountryCode},
+		{name: "digital_estate", value: ctx.DigitalEstateID, want: scope.DigitalEstateID},
+		{name: "digital_property", value: ctx.DigitalPropertyID, want: scope.DigitalPropertyID},
+		{name: "channel", value: ctx.ChannelID, want: scope.ChannelID},
 		{name: "currency", value: ctx.CurrencyCode, want: scope.CurrencyCode},
 		{name: "locale", value: ctx.Locale, want: scope.Locale},
+		{name: "environment", value: ctx.Environment, want: scope.Environment},
 	}
 
 	for _, check := range matchChecks {
