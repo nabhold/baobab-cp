@@ -4,16 +4,12 @@ import (
 	"context"
 	"errors"
 	"sort"
+
+	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
 // EngineInstance is the runtime engine instance selected by the topology resolver.
-type EngineInstance struct {
-	ID          string `json:"id,omitempty"`
-	EngineID    string `json:"engine_id,omitempty"`
-	Region      string `json:"region,omitempty"`
-	Environment string `json:"environment,omitempty"`
-	Status      string `json:"status,omitempty"`
-}
+type EngineInstance = domain.EngineInstance
 
 // TopologyResolutionQuery resolves an engine instance within the current trusted context.
 type TopologyResolutionQuery struct {
