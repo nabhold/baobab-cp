@@ -4,43 +4,36 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"time"
+
+	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
 // Context represents a trusted runtime context produced by the resolver layer.
-type Context struct {
-	TenantID      string                   `json:"tenant_id,omitempty"`
-	LegalEntityID string                   `json:"legal_entity_id,omitempty"`
-	MarketID      string                   `json:"market_id,omitempty"`
-	CountryCode   string                   `json:"country_code,omitempty"`
-	CurrencyCode  string                   `json:"currency_code,omitempty"`
-	Locale        string                   `json:"locale,omitempty"`
-	Provenance    map[string]ContextSource `json:"provenance,omitempty"`
-}
+type Context = domain.Context
 
 // TrustLevel identifies the trust level of the source evidence used to derive a context value.
-type TrustLevel string
+type TrustLevel = domain.TrustLevel
 
 const (
-	TrustUntrusted  TrustLevel = "UNTRUSTED"
-	TrustVerified   TrustLevel = "VERIFIED"
-	TrustAuthorised TrustLevel = "AUTHORISED"
-	TrustSystem     TrustLevel = "SYSTEM"
+	TrustUntrusted  = domain.TrustUntrusted
+	TrustVerified   = domain.TrustVerified
+	TrustAuthorised = domain.TrustAuthorised
+	TrustSystem     = domain.TrustSystem
 )
 
-type ContextSource struct {
-	Source     string
-	TrustLevel TrustLevel
-	Evidence   string
-}
+type ContextSource = domain.ContextSource
 
 // ResolutionEvidence is the input used by the resolver to derive runtime context.
 type ResolutionEvidence struct {
+	PrincipalID   string
 	TenantID      string
 	LegalEntityID string
 	MarketID      string
 	CountryCode   string
 	CurrencyCode  string
 	Locale        string
+	CorrelationID string
 	Provenance    map[string]ContextSource
 }
 
@@ -64,12 +57,15 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 		}
 	}
 	return Context{
+		PrincipalID:   evidence.PrincipalID,
 		TenantID:      evidence.TenantID,
 		LegalEntityID: evidence.LegalEntityID,
 		MarketID:      evidence.MarketID,
 		CountryCode:   evidence.CountryCode,
 		CurrencyCode:  evidence.CurrencyCode,
 		Locale:        evidence.Locale,
+		CorrelationID: evidence.CorrelationID,
+		ResolvedAt:    time.Now().UTC(),
 		Provenance:    evidence.Provenance,
 	}, nil
 }
