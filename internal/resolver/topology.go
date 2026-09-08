@@ -3,7 +3,7 @@ package resolver
 import (
 	"context"
 	"errors"
-	"sort"
+	"time"
 
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
@@ -13,11 +13,13 @@ type EngineInstance = domain.EngineInstance
 
 // TopologyResolutionQuery resolves an engine instance within the current trusted context.
 type TopologyResolutionQuery struct {
-	Context         Context
-	EngineInstances []EngineInstance
+	Context                  Context
+	SelectedEngineInstanceID string
+	EngineInstances          []EngineInstance
+	At                       time.Time
 }
 
-// TopologyResolverImpl resolves an engine instance to the highest-ranked active candidate.
+// TopologyResolverImpl validates the exact instance selected by CapabilityBinding.
 type TopologyResolverImpl struct{}
 
 func (TopologyResolverImpl) Resolve(_ context.Context, q TopologyResolutionQuery) (EngineInstance, error) {
@@ -25,29 +27,45 @@ func (TopologyResolverImpl) Resolve(_ context.Context, q TopologyResolutionQuery
 		return EngineInstance{}, errors.New("engine instance not found")
 	}
 
-	active := make([]EngineInstance, 0, len(q.EngineInstances))
+	if q.SelectedEngineInstanceID == "" {
+		return EngineInstance{}, errors.New("selected engine instance is required")
+	}
+	at := q.At
+	if at.IsZero() {
+		at = q.Context.ResolvedAt
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
 	for _, instance := range q.EngineInstances {
+		if instance.ID != q.SelectedEngineInstanceID {
+			continue
+		}
 		if instance.Status != "ACTIVE" {
-			continue
+			return EngineInstance{}, errors.New("selected engine instance is not active")
 		}
-		if instance.Environment == "" {
-			continue
+		if instance.HealthStatus != "" && instance.HealthStatus != "UNKNOWN" && instance.HealthStatus != "HEALTHY" {
+			return EngineInstance{}, errors.New("selected engine instance is not healthy")
 		}
-		active = append(active, instance)
+		if !instance.EffectiveFrom.IsZero() && at.Before(instance.EffectiveFrom) {
+			return EngineInstance{}, errors.New("selected engine instance is not yet effective")
+		}
+		if instance.EffectiveTo != nil && !at.Before(*instance.EffectiveTo) {
+			return EngineInstance{}, errors.New("selected engine instance is expired")
+		}
+		if q.Context.Environment != "" && instance.Environment != q.Context.Environment {
+			return EngineInstance{}, errors.New("engine instance environment mismatch")
+		}
+		if q.Context.DeploymentRegion != "" && instance.Region != q.Context.DeploymentRegion {
+			return EngineInstance{}, errors.New("engine instance region mismatch")
+		}
+		if q.Context.IsolationProfileID != "" && instance.IsolationProfileID != q.Context.IsolationProfileID {
+			return EngineInstance{}, errors.New("engine instance isolation profile mismatch")
+		}
+		if q.Context.DeploymentRegion != "" && instance.ResidencyRegion != "" && instance.ResidencyRegion != q.Context.DeploymentRegion {
+			return EngineInstance{}, errors.New("engine instance residency mismatch")
+		}
+		return instance, nil
 	}
-	if len(active) == 0 {
-		return EngineInstance{}, errors.New("engine instance not found")
-	}
-
-	sort.Slice(active, func(i, j int) bool {
-		if active[i].Environment != active[j].Environment {
-			return active[i].Environment == "production"
-		}
-		if active[i].Region != active[j].Region {
-			return active[i].Region < active[j].Region
-		}
-		return active[i].ID < active[j].ID
-	})
-
-	return active[0], nil
+	return EngineInstance{}, errors.New("selected engine instance not found")
 }
