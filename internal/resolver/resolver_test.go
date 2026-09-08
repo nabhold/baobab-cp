@@ -46,7 +46,7 @@ func TestContextResolverMergesEvidenceAndTrust(t *testing.T) {
 		Locale:        "en-ZA",
 		CorrelationID: "correlation-123",
 		Provenance: map[string]ContextSource{
-			"tenant": {Source: "authn", TrustLevel: TrustAuthorised, Evidence: "jwt-subject"},
+			"tenant":    {Source: "authn", TrustLevel: TrustAuthorised, Evidence: "jwt-subject"},
 			"principal": {Source: "authn", TrustLevel: TrustAuthorised, Evidence: "jwt-subject"},
 		},
 	}
