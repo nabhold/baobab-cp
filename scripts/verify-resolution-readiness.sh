@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+required_files=(
+  contracts.lock.yaml
+  internal/store/postgres/migrations/000024_resolution_spine_invariants.sql
+  docs/performance/gate-11-resolution-baseline.md
+  docs/resilience/gate-12-resolution-resilience.md
+  docs/security/gate-14-resolution-security.md
+)
+
+for file in "${required_files[@]}"; do
+  test -s "$file" || { echo "missing readiness evidence: $file" >&2; exit 1; }
+done
+
+grep -q 'name: "baobab-platform-resolution"' contracts.lock.yaml
+grep -q 'version: "1.0.0"' contracts.lock.yaml
+grep -q 'capability_binding_primary_excl' internal/store/postgres/migrations/000024_resolution_spine_invariants.sql
+grep -q 'canonical_mapping_source_type_active_excl' internal/store/postgres/migrations/000024_resolution_spine_invariants.sql
+
+test -n "${TEST_DATABASE_URL:-}" || { echo "TEST_DATABASE_URL is required; readiness cannot be proved with skipped integration tests" >&2; exit 1; }
+test -d "${SHARED_CONTRACTS_DIR:-}" || { echo "SHARED_CONTRACTS_DIR is required for contract conformance" >&2; exit 1; }
+
+go test -race ./...
+go vet ./...
+test -z "$(gofmt -l cmd internal)"
