@@ -80,7 +80,7 @@ jobs:
     # SHA is nabhold/shared's v1.1.0 tag (annotated — peeled commit, not
     # the tag object's own SHA), verified live via `git ls-remote --tags
     # https://github.com/nabhold/shared.git v1.1.0 v1.1.0^{}` on 2026-08-25.
-    uses: nabhold/shared/.github/workflows/security-secrets-scan.yml@f8df9b90ffe8fef5cbf6d14a9bcf868f723d1464 # v1.1.0
+    uses: nabhold/shared/.github/workflows/security-secrets-scan.yml@38defb11aacd95a6f68b7db8026fe336417a2af6 # v1.2.0
 
   codeql:
     name: CodeQL
@@ -91,7 +91,7 @@ jobs:
     # SHA is nabhold/shared's v1.1.0 tag (annotated — peeled commit, not
     # the tag object's own SHA), verified live via `git ls-remote --tags
     # https://github.com/nabhold/shared.git v1.1.0 v1.1.0^{}` on 2026-08-25.
-    uses: nabhold/shared/.github/workflows/security-codeql.yml@f8df9b90ffe8fef5cbf6d14a9bcf868f723d1464 # v1.1.0
+    uses: nabhold/shared/.github/workflows/security-codeql.yml@38defb11aacd95a6f68b7db8026fe336417a2af6 # v1.2.0
     with:
       languages: '["go"]'
       build-mode: "autobuild"
