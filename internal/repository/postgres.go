@@ -489,7 +489,7 @@ func (r *PostgresRepository) LinkExternalIdentityAudited(ctx context.Context, ex
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO audit_events(actor_id, actor_type, client_id, token_id, correlation_id, action, target, result, policy_decision, payload)
-		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10)`,
+		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::uuid, $6, $7, $8, $9, $10)`,
 		actor.ActorID, actor.ActorType, actor.ClientID, actor.TokenID, actor.CorrelationID,
 		"identity.external_identity.linked", "principal:"+external.PrincipalID, "success", reason, payload); err != nil {
 		return fmt.Errorf("write link audit record: %w", err)
