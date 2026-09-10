@@ -22,7 +22,7 @@ func TestResolutionPipelineBuildsFinalDecision(t *testing.T) {
 		Candidates: []domain.Mapping{{
 			ID:                      "mapping-tenant",
 			MappingType:             "IDENTITY",
-			ResolutionMode:          "SINGLE",
+			TenantID:                "tenant-123",
 			CanonicalEntityID:       "tenant-123",
 			TargetCanonicalEntityID: "entity-tenant",
 			ScopeID:                 "tenant-123",

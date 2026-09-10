@@ -21,8 +21,8 @@ func TestScopeMatcherPrefersMoreSpecificMatch(t *testing.T) {
 		TenantID:      "tenant-123",
 		LegalEntityID: "legal-456",
 		MarketID:      "market-789",
-		CountryCode:   "ZA",
-		CurrencyCode:  "ZAR",
+		Country:       "ZA",
+		Currency:      "ZAR",
 		Locale:        "en-ZA",
 	}
 

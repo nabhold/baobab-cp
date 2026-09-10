@@ -86,7 +86,7 @@ func (r *Repository) CreateMapping(_ context.Context, mapping domain.Mapping) er
 	if _, err := r.GetMapping(context.Background(), mapping.ID); err == nil {
 		return fmt.Errorf("mapping %s already exists", mapping.ID)
 	}
-	mapping.Version = 1
+	mapping.Revision = 1
 	r.Mappings[mapping.CanonicalEntityID] = append(r.Mappings[mapping.CanonicalEntityID], mapping)
 	return nil
 }
@@ -117,10 +117,10 @@ func (r *Repository) SaveMapping(_ context.Context, mapping domain.Mapping, expe
 			if current.ID != mapping.ID {
 				continue
 			}
-			if current.Version != expectedVersion {
-				return fmt.Errorf("mapping %s version conflict: expected %d, got %d", mapping.ID, expectedVersion, current.Version)
+			if current.Revision != expectedVersion {
+				return fmt.Errorf("mapping %s version conflict: expected %d, got %d", mapping.ID, expectedVersion, current.Revision)
 			}
-			mapping.Version = current.Version + 1
+			mapping.Revision = current.Revision + 1
 			r.Mappings[entityID][index] = mapping
 			return nil
 		}

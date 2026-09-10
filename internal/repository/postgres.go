@@ -98,9 +98,10 @@ func (r *PostgresRepository) ListMappings(ctx context.Context, canonicalEntityID
 		return nil, errors.New("repository is not initialized")
 	}
 	rows, err := r.pool.Query(ctx, `
-		SELECT cm.canonical_mapping_id::text, cm.mapping_type, cm.source_entity_id::text,
-		       cm.target_entity_id::text, COALESCE(ms.mapping_scope_id::text, cm.source_entity_id::text),
-		       UPPER(cm.status), cm.effective_from, cm.effective_to
+		SELECT cm.canonical_mapping_id::text, cm.mapping_type, COALESCE(ce.tenant_id, ''),
+		       cm.source_entity_id::text, cm.target_entity_id::text,
+		       COALESCE(ms.mapping_scope_id::text, cm.source_entity_id::text),
+		       UPPER(cm.status), cm.effective_from, cm.effective_to, cm.created_at
 		FROM mapping.canonical_mapping cm
 		JOIN registry.canonical_entity ce ON ce.canonical_entity_id = cm.source_entity_id
 		LEFT JOIN mapping.mapping_scope ms ON ms.tenant_id = ce.tenant_id
@@ -114,31 +115,37 @@ func (r *PostgresRepository) ListMappings(ctx context.Context, canonicalEntityID
 	var out []domain.Mapping
 	for rows.Next() {
 		var m domain.Mapping
-		var effectiveFrom time.Time
+		var effectiveFrom, createdAt time.Time
 		var effectiveTo *time.Time
 		if err := rows.Scan(
 			&m.ID,
 			&m.MappingType,
+			&m.TenantID,
 			&m.CanonicalEntityID,
 			&m.TargetCanonicalEntityID,
 			&m.ScopeID,
 			&m.Status,
 			&effectiveFrom,
 			&effectiveTo,
+			&createdAt,
 		); err != nil {
 			return nil, err
 		}
-		m.ResolutionMode = "SINGLE"
+		// Direction/Cardinality/Authority/Confidence/ResolutionPriority/Revision
+		// have no backing columns on mapping.canonical_mapping yet -- see the
+		// Mapping struct's own doc comment (domain/canonical.go) and migration
+		// 000022's comment for the same pre-existing gap.
 		m.Direction = "SOURCE_TO_TARGET"
 		m.Cardinality = "ONE_TO_ONE"
 		m.Authority = "baobab"
 		m.Confidence = "CONFIRMED"
 		m.ResolutionPriority = 0
-		m.Version = 1
+		m.Revision = 1
 		m.EffectiveFrom = effectiveFrom.UTC().Format(time.RFC3339)
 		if effectiveTo != nil {
 			m.EffectiveTo = effectiveTo.UTC().Format(time.RFC3339)
 		}
+		m.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -191,18 +198,30 @@ func (r *PostgresRepository) GetMapping(ctx context.Context, mappingID string) (
 		return domain.Mapping{}, errors.New("repository is not initialized")
 	}
 	var mapping domain.Mapping
-	var effectiveFrom time.Time
+	var effectiveFrom, createdAt time.Time
 	var effectiveTo *time.Time
-	err := r.pool.QueryRow(ctx, `SELECT canonical_mapping_id::text, mapping_type, source_entity_id::text, target_entity_id::text, source_entity_id::text, UPPER(status), effective_from, effective_to FROM mapping.canonical_mapping WHERE canonical_mapping_id=$1::uuid`, mappingID).Scan(&mapping.ID, &mapping.MappingType, &mapping.CanonicalEntityID, &mapping.TargetCanonicalEntityID, &mapping.ScopeID, &mapping.Status, &effectiveFrom, &effectiveTo)
+	err := r.pool.QueryRow(ctx, `
+		SELECT cm.canonical_mapping_id::text, cm.mapping_type, COALESCE(ce.tenant_id, ''),
+		       cm.source_entity_id::text, cm.target_entity_id::text, cm.source_entity_id::text,
+		       UPPER(cm.status), cm.effective_from, cm.effective_to, cm.created_at
+		FROM mapping.canonical_mapping cm
+		JOIN registry.canonical_entity ce ON ce.canonical_entity_id = cm.source_entity_id
+		WHERE cm.canonical_mapping_id=$1::uuid`, mappingID).Scan(
+		&mapping.ID, &mapping.MappingType, &mapping.TenantID,
+		&mapping.CanonicalEntityID, &mapping.TargetCanonicalEntityID, &mapping.ScopeID,
+		&mapping.Status, &effectiveFrom, &effectiveTo, &createdAt,
+	)
 	if err != nil {
 		return domain.Mapping{}, fmt.Errorf("get mapping %s: %w", mappingID, err)
 	}
-	mapping.ResolutionMode, mapping.Direction, mapping.Cardinality = "SINGLE", "SOURCE_TO_TARGET", "ONE_TO_ONE"
-	mapping.Authority, mapping.Confidence, mapping.Version = "baobab", "CONFIRMED", 1
+	// See ListMappings' comment: these have no backing column yet.
+	mapping.Direction, mapping.Cardinality = "SOURCE_TO_TARGET", "ONE_TO_ONE"
+	mapping.Authority, mapping.Confidence, mapping.Revision = "baobab", "CONFIRMED", 1
 	mapping.EffectiveFrom = effectiveFrom.UTC().Format(time.RFC3339)
 	if effectiveTo != nil {
 		mapping.EffectiveTo = effectiveTo.UTC().Format(time.RFC3339)
 	}
+	mapping.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 	return mapping, nil
 }
 

@@ -138,21 +138,40 @@ func (b CapabilityBinding) Validate() error {
 	return nil
 }
 
+// MappingScope's fields mirror nabhold/shared's contracts/control-plane/v1/
+// canonical-mapping.schema.json #/$defs/mappingScope field-for-field (names,
+// required-ness) per docs/reconciliation/platform-resolution-spine-audit.md
+// Gate 1; see internal/domain/contract_compatibility_test.go. Nothing in
+// this repository currently loads a MappingScope from Postgres (see
+// internal/repository/postgres.go's ListMappings: the only mapping.
+// mapping_scope column read is mapping_scope_id, joined in purely to supply
+// Mapping.ScopeID) -- this type is constructed in-memory/by tests only, so
+// this reconciliation needed no accompanying migration.
 type MappingScope struct {
-	ID                string `json:"id,omitempty"`
-	TenantID          string `json:"tenant_id,omitempty"`
-	LegalEntityID     string `json:"legal_entity_id,omitempty"`
-	MarketID          string `json:"market_id,omitempty"`
-	CountryCode       string `json:"country_code,omitempty"`
-	DigitalEstateID   string `json:"digital_estate_id,omitempty"`
-	DigitalPropertyID string `json:"digital_property_id,omitempty"`
-	ChannelID         string `json:"channel_id,omitempty"`
-	CurrencyCode      string `json:"currency_code,omitempty"`
-	Locale            string `json:"locale,omitempty"`
-	Environment       string `json:"environment,omitempty"`
-	EngineID          string `json:"engine_id,omitempty"`
-	EngineInstanceID  string `json:"engine_instance_id,omitempty"`
-	EntityType        string `json:"entity_type,omitempty"`
+	ScopeID            string   `json:"scope_id,omitempty"`
+	TenantID           string   `json:"tenant_id,omitempty"`
+	LegalEntityID      string   `json:"legal_entity_id,omitempty"`
+	OrganisationID     string   `json:"organisation_id,omitempty"`
+	BusinessUnitID     string   `json:"business_unit_id,omitempty"`
+	OperatingRegionID  string   `json:"operating_region_id,omitempty"`
+	GeographicRegionID string   `json:"geographic_region_id,omitempty"`
+	MarketID           string   `json:"market_id,omitempty"`
+	Country            string   `json:"country,omitempty"`
+	EstateID           string   `json:"estate_id,omitempty"`
+	DigitalPropertyID  string   `json:"digital_property_id,omitempty"`
+	ChannelID          string   `json:"channel_id,omitempty"`
+	Currency           string   `json:"currency,omitempty"`
+	Locale             string   `json:"locale,omitempty"`
+	CatalogueID        string   `json:"catalogue_id,omitempty"`
+	CustomerSegmentID  string   `json:"customer_segment_id,omitempty"`
+	EngineID           string   `json:"engine_id,omitempty"`
+	EngineInstanceID   string   `json:"engine_instance_id,omitempty"`
+	Environment        string   `json:"environment,omitempty"`
+	DeploymentRegion   string   `json:"deployment_region,omitempty"`
+	IncludeCountries   []string `json:"include_countries,omitempty"`
+	ExcludeCountries   []string `json:"exclude_countries,omitempty"`
+	CreatedAt          string   `json:"created_at,omitempty"`
+	UpdatedAt          string   `json:"updated_at,omitempty"`
 }
 
 type ExternalReference struct {

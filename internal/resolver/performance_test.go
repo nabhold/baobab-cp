@@ -21,7 +21,7 @@ func BenchmarkMappingResolution100Candidates(b *testing.B) {
 		}
 		candidates[i] = validMapping(scopeID, "canonical-warehouse", fmt.Sprintf("external-%03d", i))
 		candidates[i].ResolutionPriority = i
-		scopes[scopeID] = domain.MappingScope{ID: scopeID, TenantID: tenantID}
+		scopes[scopeID] = domain.MappingScope{ScopeID: scopeID, TenantID: tenantID}
 	}
 	query := MappingResolutionQuery{
 		CanonicalEntityID: "canonical-warehouse",
