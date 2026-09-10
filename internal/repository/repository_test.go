@@ -112,3 +112,49 @@ func TestInMemoryRepositoryPersistsMappingsAndBindingsWithVersions(t *testing.T)
 		t.Fatalf("unexpected saved bindings: %+v", bindings)
 	}
 }
+
+func TestInMemoryRepositoryPersistsMappingScopes(t *testing.T) {
+	repo := NewInMemoryRepository()
+	scope := domain.MappingScope{
+		ScopeID:  "scope-1",
+		TenantID: "tenant-1",
+		Country:  "KE",
+		Currency: "KES",
+	}
+	if err := repo.CreateMappingScope(context.Background(), scope); err != nil {
+		t.Fatalf("create mapping scope failed: %v", err)
+	}
+	if err := repo.CreateMappingScope(context.Background(), scope); err == nil {
+		t.Fatal("expected duplicate mapping scope to be rejected")
+	}
+
+	empty := domain.MappingScope{ScopeID: "scope-invalid"}
+	if err := repo.CreateMappingScope(context.Background(), empty); err == nil {
+		t.Fatal("expected mapping scope without tenant_id to be rejected")
+	}
+
+	fetched, err := repo.GetMappingScope(context.Background(), "scope-1")
+	if err != nil {
+		t.Fatalf("get mapping scope failed: %v", err)
+	}
+	if fetched.Country != "KE" || fetched.Currency != "KES" {
+		t.Fatalf("unexpected fetched mapping scope: %+v", fetched)
+	}
+
+	if _, err := repo.GetMappingScope(context.Background(), "missing"); err == nil {
+		t.Fatal("expected missing mapping scope lookup to fail")
+	}
+
+	other := domain.MappingScope{ScopeID: "scope-2", TenantID: "tenant-2"}
+	if err := repo.CreateMappingScope(context.Background(), other); err != nil {
+		t.Fatalf("create second mapping scope failed: %v", err)
+	}
+
+	scopes, err := repo.ListMappingScopes(context.Background(), "tenant-1")
+	if err != nil {
+		t.Fatalf("list mapping scopes failed: %v", err)
+	}
+	if len(scopes) != 1 || scopes[0].ScopeID != "scope-1" {
+		t.Fatalf("unexpected mapping scopes for tenant-1: %+v", scopes)
+	}
+}

@@ -41,11 +41,22 @@ type CapabilityWriter interface {
 	SaveBinding(ctx context.Context, binding resolver.CapabilityBinding, expectedVersion int64) error
 }
 
+// MappingScopeWriter is the mutable MappingScope contract (Gate 2,
+// docs/reconciliation/platform-resolution-spine-audit.md): the first
+// repositories to support persisting the scope dimensions Gate 1 (#61)
+// already gave domain.MappingScope Go fields for.
+type MappingScopeWriter interface {
+	CreateMappingScope(ctx context.Context, scope domain.MappingScope) error
+	GetMappingScope(ctx context.Context, scopeID string) (domain.MappingScope, error)
+	ListMappingScopes(ctx context.Context, tenantID string) ([]domain.MappingScope, error)
+}
+
 // Repository is a lightweight in-memory repository backing the resolver/service layer.
 type Repository struct {
 	Mappings        map[string][]domain.Mapping
 	Bindings        map[string][]resolver.CapabilityBinding
 	EngineInstances map[string][]resolver.EngineInstance
+	MappingScopes   map[string]domain.MappingScope // keyed by ScopeID
 }
 
 var _ MappingRepository = (*Repository)(nil)
@@ -53,12 +64,14 @@ var _ CapabilityRepository = (*Repository)(nil)
 var _ ResolverRepository = (*Repository)(nil)
 var _ MappingWriter = (*Repository)(nil)
 var _ CapabilityWriter = (*Repository)(nil)
+var _ MappingScopeWriter = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
 		Mappings:        map[string][]domain.Mapping{},
 		Bindings:        map[string][]resolver.CapabilityBinding{},
 		EngineInstances: map[string][]resolver.EngineInstance{},
+		MappingScopes:   map[string]domain.MappingScope{},
 	}
 }
 
@@ -126,6 +139,44 @@ func (r *Repository) SaveMapping(_ context.Context, mapping domain.Mapping, expe
 		}
 	}
 	return fmt.Errorf("mapping %s not found", mapping.ID)
+}
+
+func (r *Repository) CreateMappingScope(_ context.Context, scope domain.MappingScope) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := scope.Validate(); err != nil {
+		return fmt.Errorf("validate mapping scope: %w", err)
+	}
+	if _, exists := r.MappingScopes[scope.ScopeID]; exists {
+		return fmt.Errorf("mapping scope %s already exists", scope.ScopeID)
+	}
+	r.MappingScopes[scope.ScopeID] = scope
+	return nil
+}
+
+func (r *Repository) GetMappingScope(_ context.Context, scopeID string) (domain.MappingScope, error) {
+	if r == nil {
+		return domain.MappingScope{}, errors.New("repository is nil")
+	}
+	scope, ok := r.MappingScopes[scopeID]
+	if !ok {
+		return domain.MappingScope{}, fmt.Errorf("mapping scope %s not found", scopeID)
+	}
+	return scope, nil
+}
+
+func (r *Repository) ListMappingScopes(_ context.Context, tenantID string) ([]domain.MappingScope, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var out []domain.MappingScope
+	for _, scope := range r.MappingScopes {
+		if scope.TenantID == tenantID {
+			out = append(out, scope)
+		}
+	}
+	return out, nil
 }
 
 func (r *Repository) ListBindings(_ context.Context, capabilityKey string) ([]resolver.CapabilityBinding, error) {
