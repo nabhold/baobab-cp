@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/nabhold/baobab-cp/internal/domain"
@@ -156,5 +157,56 @@ func TestInMemoryRepositoryPersistsMappingScopes(t *testing.T) {
 	}
 	if len(scopes) != 1 || scopes[0].ScopeID != "scope-1" {
 		t.Fatalf("unexpected mapping scopes for tenant-1: %+v", scopes)
+	}
+}
+
+// TestInMemoryRepositoryResolvesAndProvisionsIdentity exercises Gate IAM-3
+// phase 2's IdentityRepository against ADR-0004 §11's resolution flow: an
+// unknown (issuer, subject) pair returns ErrIdentityNotFound (the "absent"
+// branch a phase-3 provisioning flow would react to), and once a Principal
+// is created and an ExternalIdentity linked to it, the same pair resolves
+// to that Principal.
+func TestInMemoryRepositoryResolvesAndProvisionsIdentity(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	issuer, subject := "https://iam.nabhold.com/realms/baobab", "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+
+	if _, err := repo.ResolveIdentity(ctx, issuer, subject); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("expected ErrIdentityNotFound for unknown (issuer, subject), got %v", err)
+	}
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	if err := repo.CreateIdentity(ctx, principal); err == nil {
+		t.Fatal("expected duplicate principal id to be rejected")
+	}
+
+	external := domain.ExternalIdentity{
+		ID: domain.NewExternalIdentityID(), PrincipalID: principal.ID,
+		Issuer: issuer, Subject: subject, ProviderType: "keycloak", Status: "ACTIVE",
+	}
+	if err := repo.LinkExternalIdentity(ctx, external); err != nil {
+		t.Fatalf("link external identity failed: %v", err)
+	}
+	if err := repo.LinkExternalIdentity(ctx, external); err == nil {
+		t.Fatal("expected duplicate (issuer, subject) to be rejected")
+	}
+
+	resolved, err := repo.ResolveIdentity(ctx, issuer, subject)
+	if err != nil {
+		t.Fatalf("resolve identity failed: %v", err)
+	}
+	if resolved.ID != principal.ID || resolved.ActorType != "human" || resolved.Status != "ACTIVE" {
+		t.Fatalf("unexpected resolved principal: %+v", resolved)
+	}
+
+	orphan := domain.ExternalIdentity{
+		ID: domain.NewExternalIdentityID(), PrincipalID: "does-not-exist",
+		Issuer: issuer, Subject: "other-subject", Status: "ACTIVE",
+	}
+	if err := repo.LinkExternalIdentity(ctx, orphan); err == nil {
+		t.Fatal("expected linking to a nonexistent principal to be rejected")
 	}
 }

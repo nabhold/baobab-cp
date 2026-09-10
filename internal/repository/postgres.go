@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nabhold/baobab-cp/internal/domain"
@@ -20,6 +21,15 @@ import (
 // rather than silently select one of the candidates.
 var ErrMappingOverlap = errors.New("overlapping active mapping")
 
+// ErrExternalIdentityAlreadyLinked is returned when LinkExternalIdentity's
+// insert is rejected by identity.external_identity's UNIQUE(issuer, subject)
+// constraint (migration 000026) -- ADR-0004 §7/§54's core invariant that a
+// given external provider subject resolves to at most one Canonical
+// Identity. Gate IAM-3 phase 3's provisioning flow (ADR-0004 §56, "Identity
+// Provisioning Race") is expected to treat this as "someone else just
+// created it concurrently" and re-resolve, not as a fatal error.
+var ErrExternalIdentityAlreadyLinked = errors.New("external identity already linked to a principal")
+
 // PostgresRepository is the PostgreSQL-backed repository implementation for mapping, capability, and topology data.
 type PostgresRepository struct {
 	pool *pgxpool.Pool
@@ -31,6 +41,8 @@ var _ ResolverRepository = (*PostgresRepository)(nil)
 var _ MappingWriter = (*PostgresRepository)(nil)
 var _ CapabilityWriter = (*PostgresRepository)(nil)
 var _ CanonicalEntityRepository = (*PostgresRepository)(nil)
+var _ MappingScopeWriter = (*PostgresRepository)(nil)
+var _ IdentityRepository = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -353,6 +365,66 @@ func (r *PostgresRepository) ListMappingScopes(ctx context.Context, tenantID str
 		return nil, err
 	}
 	return out, nil
+}
+
+// ResolveIdentity, CreateIdentity and LinkExternalIdentity are Gate IAM-3
+// phase 2 (docs/governance/gate-iam-3-canonical-identity-scope.md): the
+// first real Postgres-backed persistence for domain.Principal/
+// domain.ExternalIdentity, against the identity.principal/
+// identity.external_identity tables migration 000026 added.
+func (r *PostgresRepository) ResolveIdentity(ctx context.Context, issuer, subject string) (domain.Principal, error) {
+	if r == nil || r.pool == nil {
+		return domain.Principal{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT p.principal_id::text, p.actor_type, p.status, p.created_at, p.updated_at
+		FROM identity.principal p
+		JOIN identity.external_identity e ON e.principal_id = p.principal_id
+		WHERE e.issuer = $1 AND e.subject = $2`, issuer, subject)
+	var principal domain.Principal
+	err := row.Scan(&principal.ID, &principal.ActorType, &principal.Status, &principal.CreatedAt, &principal.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Principal{}, ErrIdentityNotFound
+		}
+		return domain.Principal{}, fmt.Errorf("resolve identity: %w", err)
+	}
+	return principal, nil
+}
+
+func (r *PostgresRepository) CreateIdentity(ctx context.Context, principal domain.Principal) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := principal.Validate(); err != nil {
+		return fmt.Errorf("validate principal: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO identity.principal(principal_id, actor_type, status)
+		VALUES ($1::uuid, $2, $3)`,
+		principal.ID, principal.ActorType, principal.Status)
+	return err
+}
+
+func (r *PostgresRepository) LinkExternalIdentity(ctx context.Context, external domain.ExternalIdentity) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := external.Validate(); err != nil {
+		return fmt.Errorf("validate external identity: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO identity.external_identity(external_identity_id, principal_id, issuer, subject, provider_type, status)
+		VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, ''), $6)`,
+		external.ID, external.PrincipalID, external.Issuer, external.Subject, external.ProviderType, external.Status)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrExternalIdentityAlreadyLinked
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *PostgresRepository) ListBindings(ctx context.Context, capabilityKey string) ([]resolver.CapabilityBinding, error) {
