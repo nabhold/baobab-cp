@@ -11,7 +11,7 @@ import (
 func TestCapabilityExtractionKeepsConsumerContractStable(t *testing.T) {
 	now := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
 	ctx := Context{TenantID: "tn_zuribeans", Environment: "production", DeploymentRegion: "af-south-1", ResolvedAt: now}
-	scope := map[string]domain.MappingScope{"zuribeans-production": {ID: "zuribeans-production", TenantID: "tn_zuribeans", Environment: "production"}}
+	scope := map[string]domain.MappingScope{"zuribeans-production": {ScopeID: "zuribeans-production", TenantID: "tn_zuribeans", Environment: "production"}}
 
 	before := resolveExtractedCapability(t, ctx, scope, domain.CapabilityBinding{
 		ID: "binding-idempiere", CapabilityKey: "warehouse.execution", EngineID: "idempiere",

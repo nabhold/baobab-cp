@@ -25,7 +25,7 @@ func TestMappingResolverSelectsMostSpecificCandidate(t *testing.T) {
 			{
 				ID:                      "mapping-market",
 				MappingType:             "IDENTITY",
-				ResolutionMode:          "SINGLE",
+				TenantID:                "tenant-123",
 				CanonicalEntityID:       "tenant-123",
 				TargetCanonicalEntityID: "entity-market",
 				ScopeID:                 "market-789",
@@ -40,7 +40,7 @@ func TestMappingResolverSelectsMostSpecificCandidate(t *testing.T) {
 			{
 				ID:                      "mapping-tenant",
 				MappingType:             "IDENTITY",
-				ResolutionMode:          "SINGLE",
+				TenantID:                "tenant-123",
 				CanonicalEntityID:       "tenant-123",
 				TargetCanonicalEntityID: "entity-tenant",
 				ScopeID:                 "tenant-123",
@@ -81,9 +81,9 @@ func TestMappingResolverEnforcesScopeAndTemporalWindow(t *testing.T) {
 		Context:           Context{TenantID: "tenant-a"},
 		Candidates:        []domain.Mapping{base, valid, expired},
 		Scopes: map[string]domain.MappingScope{
-			"wrong-tenant": {ID: "wrong-tenant", TenantID: "tenant-b"},
-			"right-tenant": {ID: "right-tenant", TenantID: "tenant-a"},
-			"expired":      {ID: "expired", TenantID: "tenant-a"},
+			"wrong-tenant": {ScopeID: "wrong-tenant", TenantID: "tenant-b"},
+			"right-tenant": {ScopeID: "right-tenant", TenantID: "tenant-a"},
+			"expired":      {ScopeID: "expired", TenantID: "tenant-a"},
 		},
 		At: at,
 	})
@@ -105,7 +105,7 @@ func TestMappingResolverFailsClosedOnAmbiguity(t *testing.T) {
 		Context:           Context{TenantID: "tenant-a"},
 		Candidates:        []domain.Mapping{first, second},
 		Scopes: map[string]domain.MappingScope{
-			"tenant-scope": {ID: "tenant-scope", TenantID: "tenant-a"},
+			"tenant-scope": {ScopeID: "tenant-scope", TenantID: "tenant-a"},
 		},
 	})
 	if !errors.Is(err, ErrMappingAmbiguous) {
@@ -121,7 +121,7 @@ func TestMappingResolverReversePreservesCanonicalIdentity(t *testing.T) {
 		Context:             Context{TenantID: "tenant-a", CorrelationID: "corr-1"},
 		Candidates:          []domain.Mapping{mapping},
 		Scopes: map[string]domain.MappingScope{
-			"tenant-scope": {ID: "tenant-scope", TenantID: "tenant-a"},
+			"tenant-scope": {ScopeID: "tenant-scope", TenantID: "tenant-a"},
 		},
 	})
 	if err != nil {
@@ -152,7 +152,7 @@ func validMapping(scopeID, canonicalID, externalID string) domain.Mapping {
 	return domain.Mapping{
 		ID:                  externalID,
 		MappingType:         "IDENTITY",
-		ResolutionMode:      "SINGLE",
+		TenantID:            "tenant-a",
 		CanonicalEntityID:   canonicalID,
 		ExternalReferenceID: externalID,
 		ScopeID:             scopeID,
@@ -173,7 +173,7 @@ func TestMappingResolverRejectsInactiveMappings(t *testing.T) {
 		Candidates: []domain.Mapping{{
 			ID:                      "mapping-inactive",
 			MappingType:             "IDENTITY",
-			ResolutionMode:          "SINGLE",
+			TenantID:                "tenant-123",
 			CanonicalEntityID:       "tenant-123",
 			TargetCanonicalEntityID: "entity-inactive",
 			ScopeID:                 "tenant-123",

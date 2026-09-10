@@ -51,3 +51,75 @@ func TestResolvedContextMatchesSharedSchema(t *testing.T) {
 	}
 	contracttest.ValidateJSON(t, schema, resolved)
 }
+
+// TestMappingMatchesSharedSchema and TestMappingScopeMatchesSharedSchema
+// validate against contracts/control-plane/v1/canonical-mapping.schema.json
+// per docs/reconciliation/platform-resolution-spine-audit.md Gate 1
+// ("consolidate canonical Go model and shared wire schemas"). Both use a
+// hand-built example, like every other test in this file: the IDs this
+// wire schema requires (map_..., scope_..., tn_...) are a different opaque
+// scheme than what internal/repository/postgres.go's real mapping.
+// canonical_mapping/mapping_scope tables actually mint (gen_random_uuid()
+// primary keys) -- so no example loadable from this repository's own
+// Postgres implementation today would pass this schema's mapping_id/
+// scope_id pattern regardless of field-shape reconciliation. That's a
+// separate, ID-generation-scheme gap, not something this pass's field-level
+// reconciliation fixes; flagged rather than silently worked around.
+
+func TestMappingMatchesSharedSchema(t *testing.T) {
+	dir := contracttest.SharedDir(t)
+	schema := contracttest.CompileSchema(t, dir, "control-plane/v1/canonical-mapping.schema.json#/$defs/mapping")
+
+	mapping := domain.Mapping{
+		ID:                  "map_zuribeansproduct001",
+		MappingType:         "IDENTITY",
+		TenantID:            "tn_zuribeans",
+		LegalEntityID:       "ZURIBEANS-ZA",
+		CanonicalEntityID:   "product:zuribeans:arabica-60kg",
+		ExternalReferenceID: "ref_medusa00123",
+		ScopeID:             "scope_zuribeansprod",
+		Direction:           "CANONICAL_TO_EXTERNAL",
+		Cardinality:         "ONE_TO_ONE",
+		Authority:           "trade",
+		Confidence:          "CONFIRMED",
+		ResolutionPriority:  10,
+		Status:              "ACTIVE",
+		EffectiveFrom:       "2026-01-01T00:00:00Z",
+		Revision:            1,
+		CreatedAt:           "2026-01-01T00:00:00Z",
+		CreatedBy:           "system:baobab-cp-migration",
+	}
+	if err := mapping.Validate(); err != nil {
+		t.Fatalf("mapping should be valid: %v", err)
+	}
+	contracttest.ValidateJSON(t, schema, mapping)
+}
+
+func TestMappingScopeMatchesSharedSchema(t *testing.T) {
+	dir := contracttest.SharedDir(t)
+	schema := contracttest.CompileSchema(t, dir, "control-plane/v1/canonical-mapping.schema.json#/$defs/mappingScope")
+
+	scope := domain.MappingScope{
+		ScopeID:           "scope_zuribeansprod",
+		TenantID:          "tn_zuribeans",
+		LegalEntityID:     "ZURIBEANS-ZA",
+		MarketID:          "kenya_b2b",
+		Country:           "KE",
+		EstateID:          "zuribeans_estate",
+		DigitalPropertyID: "thamani_co_ke",
+		ChannelID:         "web",
+		Currency:          "KES",
+		Locale:            "en-KE",
+		CatalogueID:       "default_catalogue",
+		CustomerSegmentID: "wholesale",
+		EngineID:          "medusa",
+		EngineInstanceID:  "medusa_prod_af",
+		Environment:       "production",
+		DeploymentRegion:  "af_south_1",
+		IncludeCountries:  []string{"KE", "UG"},
+		ExcludeCountries:  []string{"TZ"},
+		CreatedAt:         "2026-01-01T00:00:00Z",
+		UpdatedAt:         "2026-01-01T00:00:00Z",
+	}
+	contracttest.ValidateJSON(t, schema, scope)
+}

@@ -147,11 +147,27 @@ func isValidResolutionMode(mode string) bool {
 	}
 }
 
+// Mapping's fields mirror nabhold/shared's contracts/control-plane/v1/
+// canonical-mapping.schema.json #/$defs/mapping field-for-field (names,
+// required-ness) per docs/reconciliation/platform-resolution-spine-audit.md
+// Gate 1 ("consolidate canonical Go model and shared wire schemas"); see
+// internal/domain/contract_compatibility_test.go for the schema-conformance
+// test this is checked against. TenantID and CreatedAt are the only new
+// fields internal/repository/postgres.go can currently populate from real
+// data (TenantID via the source canonical entity's owner, CreatedAt from an
+// existing column); CreatedBy, LegalEntityID, ApprovedAt/By, RetiredAt/By
+// and SupersedesMappingID have no backing column yet and are left zero-value
+// when loaded from Postgres -- same treatment migration 000022's own comment
+// already gives Direction/Cardinality/Authority/Confidence/ResolutionPriority
+// (hardcoded constants, not real per-row data). Persisting all of it is
+// Gate 2 ("Complete PostgreSQL status, scope, FK and temporal invariants"),
+// not this pass.
 type Mapping struct {
-	ID                      string         `json:"id,omitempty"`
+	ID                      string         `json:"mapping_id,omitempty"`
 	MappingType             string         `json:"mapping_type"`
-	ResolutionMode          string         `json:"resolution_mode"`
-	CanonicalEntityID       string         `json:"canonical_entity_id"`
+	TenantID                string         `json:"tenant_id"`
+	LegalEntityID           string         `json:"legal_entity_id,omitempty"`
+	CanonicalEntityID       string         `json:"canonical_entity_id,omitempty"`
 	ExternalReferenceID     string         `json:"external_reference_id,omitempty"`
 	TargetCanonicalEntityID string         `json:"target_canonical_entity_id,omitempty"`
 	ScopeID                 string         `json:"scope_id"`
@@ -163,16 +179,23 @@ type Mapping struct {
 	Status                  string         `json:"status"`
 	EffectiveFrom           string         `json:"effective_from"`
 	EffectiveTo             string         `json:"effective_to,omitempty"`
+	SupersedesMappingID     string         `json:"supersedes_mapping_id,omitempty"`
 	Metadata                map[string]any `json:"metadata,omitempty"`
-	Version                 int64          `json:"version,omitempty"`
+	Revision                int64          `json:"revision,omitempty"`
+	CreatedAt               string         `json:"created_at,omitempty"`
+	CreatedBy               string         `json:"created_by,omitempty"`
+	ApprovedAt              string         `json:"approved_at,omitempty"`
+	ApprovedBy              string         `json:"approved_by,omitempty"`
+	RetiredAt               string         `json:"retired_at,omitempty"`
+	RetiredBy               string         `json:"retired_by,omitempty"`
 }
 
 func (m Mapping) Validate() error {
 	if strings.TrimSpace(m.MappingType) == "" {
 		return errors.New("mapping_type is required")
 	}
-	if !isValidResolutionMode(m.ResolutionMode) {
-		return errors.New("resolution_mode is invalid")
+	if strings.TrimSpace(m.TenantID) == "" {
+		return errors.New("tenant_id is required")
 	}
 	if strings.TrimSpace(m.CanonicalEntityID) == "" {
 		return errors.New("canonical_entity_id is required")

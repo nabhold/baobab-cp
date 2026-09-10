@@ -51,7 +51,7 @@ func TestMappingTypeDefinitionValidate(t *testing.T) {
 func TestMappingValidate(t *testing.T) {
 	valid := Mapping{
 		MappingType:             "IDENTITY",
-		ResolutionMode:          "SINGLE",
+		TenantID:                "tenant-abc",
 		CanonicalEntityID:       "tenant-123",
 		TargetCanonicalEntityID: "entity-456",
 		ScopeID:                 "scope-123",

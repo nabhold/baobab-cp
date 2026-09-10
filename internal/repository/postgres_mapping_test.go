@@ -56,8 +56,9 @@ func TestPostgresCanonicalMappingExclusionConstraintFires(t *testing.T) {
 	cleanup()
 	t.Cleanup(cleanup)
 
+	const tenantID = "tn_gate1test"
 	for _, id := range []string{sourceEntity, targetA, targetB} {
-		if _, err := admin.Exec(ctx, `INSERT INTO registry.canonical_entity(canonical_entity_id, entity_type) VALUES ($1,'PRODUCT')`, id); err != nil {
+		if _, err := admin.Exec(ctx, `INSERT INTO registry.canonical_entity(canonical_entity_id, tenant_id, entity_type) VALUES ($1,$2,'PRODUCT')`, id, tenantID); err != nil {
 			t.Fatalf("fixture setup for %s: %v", id, err)
 		}
 	}
@@ -72,7 +73,7 @@ func TestPostgresCanonicalMappingExclusionConstraintFires(t *testing.T) {
 	first := domain.Mapping{
 		ID:                      "20000000-0000-0000-0000-0000000000a1",
 		MappingType:             "IDENTITY",
-		ResolutionMode:          "SINGLE",
+		TenantID:                tenantID,
 		CanonicalEntityID:       sourceEntity,
 		TargetCanonicalEntityID: targetA,
 		ScopeID:                 sourceEntity,
@@ -121,6 +122,12 @@ func TestPostgresCanonicalMappingExclusionConstraintFires(t *testing.T) {
 	}
 	if stored.TargetCanonicalEntityID != targetB {
 		t.Fatalf("expected target %s, got %s", targetB, stored.TargetCanonicalEntityID)
+	}
+	if stored.TenantID != tenantID {
+		t.Fatalf("expected tenant_id %s (derived from the source canonical entity), got %q", tenantID, stored.TenantID)
+	}
+	if stored.CreatedAt == "" {
+		t.Fatal("expected created_at to round-trip through persistence, got empty string")
 	}
 
 	mappings, err := repo.ListMappings(ctx, sourceEntity)

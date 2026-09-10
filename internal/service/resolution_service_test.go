@@ -24,7 +24,7 @@ func TestResolutionServiceResolve(t *testing.T) {
 		Mappings: []domain.Mapping{{
 			ID:                      "mapping-tenant",
 			MappingType:             "IDENTITY",
-			ResolutionMode:          "SINGLE",
+			TenantID:                "tenant-123",
 			CanonicalEntityID:       "tenant-123",
 			TargetCanonicalEntityID: "entity-tenant",
 			ScopeID:                 "tenant-123",
@@ -78,7 +78,7 @@ func TestResolutionServiceRequiresTenant(t *testing.T) {
 func TestResolutionServiceUsesRepositoryState(t *testing.T) {
 	repo := repository.NewInMemoryRepository()
 	repo.Mappings["tenant-123"] = []domain.Mapping{{
-		ID: "authoritative", MappingType: "IDENTITY", ResolutionMode: "SINGLE", CanonicalEntityID: "tenant-123",
+		ID: "authoritative", MappingType: "IDENTITY", TenantID: "tenant-123", CanonicalEntityID: "tenant-123",
 		TargetCanonicalEntityID: "entity-1", ScopeID: "tenant-123", Direction: "BIDIRECTIONAL", Cardinality: "ONE_TO_ONE",
 		Authority: "baobab", Confidence: "CONFIRMED", Status: "ACTIVE", EffectiveFrom: "2025-01-01T00:00:00Z",
 	}}

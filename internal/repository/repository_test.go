@@ -13,7 +13,7 @@ func TestInMemoryRepositoryLoadsResolverData(t *testing.T) {
 	repo.Mappings["tenant-123"] = []domain.Mapping{{
 		ID:                      "mapping-tenant",
 		MappingType:             "IDENTITY",
-		ResolutionMode:          "SINGLE",
+		TenantID:                "tenant-123",
 		CanonicalEntityID:       "tenant-123",
 		TargetCanonicalEntityID: "entity-tenant",
 		ScopeID:                 "tenant-123",
@@ -70,7 +70,7 @@ func TestInMemoryRepositoryLoadsResolverData(t *testing.T) {
 func TestInMemoryRepositoryPersistsMappingsAndBindingsWithVersions(t *testing.T) {
 	repo := NewInMemoryRepository()
 	mapping := domain.Mapping{
-		ID: "mapping-1", MappingType: "IDENTITY", ResolutionMode: "SINGLE",
+		ID: "mapping-1", MappingType: "IDENTITY", TenantID: "entity-1",
 		CanonicalEntityID: "entity-1", TargetCanonicalEntityID: "entity-2", ScopeID: "scope-1",
 		Direction: "BIDIRECTIONAL", Cardinality: "ONE_TO_ONE", Authority: "baobab",
 		Confidence: "CONFIRMED", Status: "ACTIVE", EffectiveFrom: "2025-01-01T00:00:00Z",
@@ -86,7 +86,7 @@ func TestInMemoryRepositoryPersistsMappingsAndBindingsWithVersions(t *testing.T)
 	if err != nil {
 		t.Fatalf("get mapping failed: %v", err)
 	}
-	if savedMapping.Version != 2 || savedMapping.Status != "SUSPENDED" {
+	if savedMapping.Revision != 2 || savedMapping.Status != "SUSPENDED" {
 		t.Fatalf("unexpected saved mapping: %+v", savedMapping)
 	}
 	if err := repo.SaveMapping(context.Background(), mapping, 1); err == nil {
