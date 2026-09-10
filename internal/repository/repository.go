@@ -69,8 +69,47 @@ var ErrIdentityNotFound = errors.New("identity not found")
 // calling, matching every other Create* method in this package.
 type IdentityRepository interface {
 	ResolveIdentity(ctx context.Context, issuer, subject string) (domain.Principal, error)
+	// GetPrincipal returns the Principal identified by principalID.
+	// ADR-0004 §15-22's linking/unlinking/merging flows (Gate IAM-3 phase
+	// 6) all operate on an already-resolved Principal by ID, unlike
+	// ResolveIdentity's (issuer, subject) lookup. Returns
+	// ErrIdentityNotFound if no such Principal exists.
+	GetPrincipal(ctx context.Context, principalID string) (domain.Principal, error)
 	CreateIdentity(ctx context.Context, principal domain.Principal) error
 	LinkExternalIdentity(ctx context.Context, external domain.ExternalIdentity) error
+}
+
+// AuditActor identifies who performed a security-sensitive identity
+// operation (linking, unlinking, merging), for the audit record ADR-0004
+// §16/§21/§52 require alongside it. Mirrors internal/store's
+// RequestMetadata shape -- callers building either already have this same
+// set of fields off a verified auth.Principal -- but is defined locally
+// rather than imported, to keep internal/repository (mapping/capability
+// /identity) and internal/store (tenant/context) independent of each
+// other's packages.
+type AuditActor struct {
+	ActorID       string
+	ActorType     string
+	ClientID      string
+	TokenID       string
+	CorrelationID string
+}
+
+// IdentityLinkingRepository is the Gate IAM-3 phase 6 contract
+// (docs/governance/gate-iam-3-canonical-identity-scope.md) for ADR-0004
+// §15-17's identity-linking flow: adding a second ExternalIdentity to an
+// already-existing Principal. Unlike LinkExternalIdentity (phase 2, used by
+// phase 3's first-authentication provisioning, which has no existing
+// Principal to audit a link *against* yet), this SHALL always write an
+// audit record alongside the link -- ADR-0004 §16, "Every successful link
+// SHALL be auditable." Callers are responsible for having already
+// established both factors §15 requires (an existing authenticated session
+// for the target Principal, and a fresh authentication with the new
+// provider yielding the (issuer, subject) being linked); this method does
+// not itself re-verify either -- it is the audited persistence step, not
+// the authentication protocol.
+type IdentityLinkingRepository interface {
+	LinkExternalIdentityAudited(ctx context.Context, external domain.ExternalIdentity, actor AuditActor, reason string) error
 }
 
 // ErrIdentityReferenceNotFound is returned by ResolveIdentityReference when
@@ -105,6 +144,18 @@ type Repository struct {
 	Principals         map[string]domain.Principal         // keyed by ID
 	ExternalIdentities map[string]domain.ExternalIdentity  // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
 	IdentityReferences map[string]domain.IdentityReference // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
+	// LinkAudit records every LinkExternalIdentityAudited call, purely in
+	// memory (there is no real audit_events table to write to here) so
+	// tests can assert an audit entry was actually produced.
+	LinkAudit []LinkAuditRecord
+}
+
+// LinkAuditRecord is the in-memory equivalent of the audit_events row
+// PostgresRepository.LinkExternalIdentityAudited writes.
+type LinkAuditRecord struct {
+	External domain.ExternalIdentity
+	Actor    AuditActor
+	Reason   string
 }
 
 var _ MappingRepository = (*Repository)(nil)
@@ -115,6 +166,7 @@ var _ CapabilityWriter = (*Repository)(nil)
 var _ MappingScopeWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
+var _ IdentityLinkingRepository = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
@@ -249,6 +301,17 @@ func (r *Repository) ResolveIdentity(_ context.Context, issuer, subject string) 
 	return principal, nil
 }
 
+func (r *Repository) GetPrincipal(_ context.Context, principalID string) (domain.Principal, error) {
+	if r == nil {
+		return domain.Principal{}, errors.New("repository is nil")
+	}
+	principal, ok := r.Principals[principalID]
+	if !ok {
+		return domain.Principal{}, ErrIdentityNotFound
+	}
+	return principal, nil
+}
+
 func (r *Repository) CreateIdentity(_ context.Context, principal domain.Principal) error {
 	if r == nil {
 		return errors.New("repository is nil")
@@ -284,6 +347,17 @@ func (r *Repository) LinkExternalIdentity(_ context.Context, external domain.Ext
 		return fmt.Errorf("issuer %s subject already linked to a principal", external.Issuer)
 	}
 	r.ExternalIdentities[key] = external
+	return nil
+}
+
+func (r *Repository) LinkExternalIdentityAudited(ctx context.Context, external domain.ExternalIdentity, actor AuditActor, reason string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := r.LinkExternalIdentity(ctx, external); err != nil {
+		return err
+	}
+	r.LinkAudit = append(r.LinkAudit, LinkAuditRecord{External: external, Actor: actor, Reason: reason})
 	return nil
 }
 
