@@ -1,0 +1,90 @@
+package domain
+
+import (
+	"errors"
+	"time"
+)
+
+// Principal is Baobab's canonical identity, per ADR-0004 ("Canonical
+// Identity and External Identity Mapping") -- a durable actor reference
+// that outlives any individual identity provider, engine, email address,
+// tenant relationship or Digital Estate. It is named Principal, not
+// CanonicalIdentity, to match contracts/identity/v1/principal.schema.json
+// exactly (docs/governance/gate-iam-3-canonical-identity-scope.md,
+// Decision 1) -- and to avoid sitting next to this package's unrelated
+// CanonicalEntity (a Mapping-domain business entity, e.g. a product; see
+// canonical.go) under a confusingly similar name.
+//
+// Deliberately minimal per ADR-0004 §3: "It SHALL NOT contain the complete
+// user profile." Human/workload-specific attributes
+// (contracts/identity/v1/human-identity.schema.json,
+// workload-identity.schema.json) are a later phase, not fields here.
+type Principal struct {
+	ID        string    `json:"id,omitempty"`
+	ActorType string    `json:"actor_type"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+var validPrincipalActorTypes = map[string]bool{"human": true, "workload": true, "external": true}
+var validPrincipalStatuses = map[string]bool{"ACTIVE": true, "SUSPENDED": true, "DISABLED": true, "ARCHIVED": true}
+
+func (p Principal) Validate() error {
+	if !validPrincipalActorTypes[p.ActorType] {
+		return errors.New("actor_type must be human, workload or external")
+	}
+	if !validPrincipalStatuses[p.Status] {
+		return errors.New("status must be ACTIVE, SUSPENDED, DISABLED or ARCHIVED")
+	}
+	return nil
+}
+
+// NewPrincipalID mints a new canonical identity identifier. Per ADR-0004 §5
+// ("If nabhold/shared defines a UUID or UUIDv7 convention for canonical
+// entities, Canonical Identity SHALL follow that convention") this follows
+// contracts/identity/v1/principal.schema.json's own established convention
+// -- a bare UUID (format: uuid), not this package's map_/scope_/ref_-style
+// opaque-prefixed tokens, which are a control-plane/v1 wire convention
+// identity/v1 does not use anywhere (Session.id, ExternalIdentity.id are
+// bare uuid too). NewUUIDv7, not Postgres's gen_random_uuid() (UUIDv4): see
+// identifier.go's BCP-GO-001 citation.
+func NewPrincipalID() string { return NewUUIDv7() }
+
+// ExternalIdentity is an identity asserted by an external identity
+// provider, mapped to a Principal -- ADR-0004 §6-9: the durable provider
+// key is (issuer, subject), never email or username, because both are
+// mutable, reassignable and federated inconsistently. Matches
+// contracts/identity/v1/external-identity.schema.json field-for-field;
+// ProviderType and LastSeenAt are optional there (and here) since that
+// schema's own required list omits them.
+type ExternalIdentity struct {
+	ID           string     `json:"id,omitempty"`
+	PrincipalID  string     `json:"principal_id"`
+	Issuer       string     `json:"issuer"`
+	Subject      string     `json:"subject"`
+	ProviderType string     `json:"provider_type,omitempty"`
+	Status       string     `json:"status"`
+	CreatedAt    time.Time  `json:"created_at,omitempty"`
+	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
+}
+
+var validExternalIdentityStatuses = map[string]bool{"ACTIVE": true, "UNLINKED": true, "DISABLED": true, "REVOKED": true}
+
+func (e ExternalIdentity) Validate() error {
+	if e.PrincipalID == "" {
+		return errors.New("principal_id is required")
+	}
+	if e.Issuer == "" || e.Subject == "" {
+		return errors.New("issuer and subject are required")
+	}
+	if !validExternalIdentityStatuses[e.Status] {
+		return errors.New("status must be ACTIVE, UNLINKED, DISABLED or REVOKED")
+	}
+	return nil
+}
+
+// NewExternalIdentityID mints a new external-identity identifier, following
+// the same bare-UUID convention as NewPrincipalID (identity/v1's own
+// convention, not this package's opaque-prefixed control-plane/v1 tokens).
+func NewExternalIdentityID() string { return NewUUIDv7() }
