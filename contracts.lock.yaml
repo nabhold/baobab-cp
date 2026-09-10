@@ -2,12 +2,12 @@ contract_bundle:
   name: "baobab-platform-resolution"
   version: "1.0.0"
   source_repository: "nabhold/shared"
-  source_commit: 2da1a429602d2f1421c498d412bb6c65a5626127
+  source_commit: c0b1dfcb5049f4e994e926a6f1ea9ff2b4a02b6c
 schema: nabhold-contract-consumer-lock
 version: "1.0"
 source:
   repository: nabhold/shared
-  commit: 2da1a429602d2f1421c498d412bb6c65a5626127
+  commit: c0b1dfcb5049f4e994e926a6f1ea9ff2b4a02b6c
 # This file previously listed 4 of the ~14 contracts this repository actually
 # implements against - see docs/reconciliation/shared-control-plane-audit.md
 # §6. It must declare every schema/policy file whose shape this repository's
@@ -25,6 +25,8 @@ contracts:
   - contracts/control-plane/v1/security-policy.yaml
   - contracts/errors/v1/problem-details.schema.json
   - contracts/idempotency/v1/policy.yaml
+  - contracts/identity/v1/principal.schema.json
+  - contracts/identity/v1/external-identity.schema.json
 policy:
   updates: explicit_pull_request
   compatibility: validate_before_merge
