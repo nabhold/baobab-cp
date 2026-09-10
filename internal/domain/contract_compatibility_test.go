@@ -123,3 +123,49 @@ func TestMappingScopeMatchesSharedSchema(t *testing.T) {
 	}
 	contracttest.ValidateJSON(t, schema, scope)
 }
+
+// TestPrincipalMatchesSharedSchema and TestExternalIdentityMatchesSharedSchema
+// validate domain.Principal/domain.ExternalIdentity (Gate IAM-3 phase 1,
+// docs/governance/gate-iam-3-canonical-identity-scope.md) against
+// contracts/identity/v1/principal.schema.json and external-identity.schema.json
+// -- the two shared contracts ADR-0004 §75's suggested CanonicalIdentity/
+// ExternalIdentity data model already matched field-for-field before this
+// phase's Go types existed.
+
+func TestPrincipalMatchesSharedSchema(t *testing.T) {
+	dir := contracttest.SharedDir(t)
+	schema := contracttest.CompileSchema(t, dir, "identity/v1/principal.schema.json")
+
+	principal := domain.Principal{
+		ID:        domain.NewPrincipalID(),
+		ActorType: "human",
+		Status:    "ACTIVE",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := principal.Validate(); err != nil {
+		t.Fatalf("principal should be valid: %v", err)
+	}
+	contracttest.ValidateJSON(t, schema, principal)
+}
+
+func TestExternalIdentityMatchesSharedSchema(t *testing.T) {
+	dir := contracttest.SharedDir(t)
+	schema := contracttest.CompileSchema(t, dir, "identity/v1/external-identity.schema.json")
+
+	lastSeen := time.Now().UTC()
+	external := domain.ExternalIdentity{
+		ID:           domain.NewExternalIdentityID(),
+		PrincipalID:  domain.NewPrincipalID(),
+		Issuer:       "https://iam.nabhold.com/realms/baobab",
+		Subject:      "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+		ProviderType: "keycloak",
+		Status:       "ACTIVE",
+		CreatedAt:    time.Now().UTC(),
+		LastSeenAt:   &lastSeen,
+	}
+	if err := external.Validate(); err != nil {
+		t.Fatalf("external identity should be valid: %v", err)
+	}
+	contracttest.ValidateJSON(t, schema, external)
+}
