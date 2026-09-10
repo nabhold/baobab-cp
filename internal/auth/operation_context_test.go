@@ -11,12 +11,12 @@ import (
 func TestOperationContextUsesVerifiedPrincipalIdentity(t *testing.T) {
 	now := time.Now().UTC()
 	principal := Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tn_zuribeans", ClientID: "baobab-trade", TokenID: "token-123"}
-	ctx, resolved, err := NewOperationContext(context.Background(), principal, "correlation-123", now)
+	ctx, resolved, err := NewOperationContext(context.Background(), principal, "principal-abc", "correlation-123", now)
 	if err != nil {
 		t.Fatalf("resolve operation context: %v", err)
 	}
-	if resolved.TenantID != principal.TenantID || resolved.PrincipalID != principal.Subject {
-		t.Fatal("operation Context did not preserve verified principal identity")
+	if resolved.TenantID != principal.TenantID || resolved.PrincipalID != "principal-abc" {
+		t.Fatal("operation Context did not preserve resolved canonical principal identity")
 	}
 	propagated, ok := OperationContextFromContext(ctx)
 	if !ok || propagated.TenantID != principal.TenantID || !propagated.ResolvedAt.Equal(now) {
@@ -31,8 +31,16 @@ func TestOperationContextUsesVerifiedPrincipalIdentity(t *testing.T) {
 }
 
 func TestOperationContextRejectsMissingVerifiedIdentity(t *testing.T) {
-	_, _, err := NewOperationContext(context.Background(), Principal{Subject: "caller"}, "correlation-123", time.Now())
+	_, _, err := NewOperationContext(context.Background(), Principal{Subject: "caller"}, "principal-abc", "correlation-123", time.Now())
 	if err == nil {
 		t.Fatal("missing tenant/token identity was accepted")
+	}
+}
+
+func TestOperationContextRejectsMissingResolvedPrincipalID(t *testing.T) {
+	principal := Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tn_zuribeans", ClientID: "baobab-trade", TokenID: "token-123"}
+	_, _, err := NewOperationContext(context.Background(), principal, "", "correlation-123", time.Now())
+	if err == nil {
+		t.Fatal("missing resolved canonical principal id was accepted")
 	}
 }

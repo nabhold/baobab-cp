@@ -11,7 +11,8 @@ import (
 
 // ResolverHandler exposes the composed resolution service over HTTP.
 type ResolverHandler struct {
-	Service service.ResolutionService
+	Service  service.ResolutionService
+	Identity service.IdentityService
 }
 
 type resolverRequest struct {
@@ -51,7 +52,15 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusBadRequest, "INVALID_REQUEST", "canonical_entity_id is required", false)
 		return
 	}
-	operationCtx, trustedContext, err := auth.NewOperationContext(r.Context(), principal, correlationID(r), time.Now())
+	// ADR-0004 §11/§39: resolve the verified (issuer, subject) to a durable
+	// canonical Principal before any business-domain operation proceeds --
+	// Gate IAM-3 phase 4. Token-derived, not caller-submitted, per §39.
+	resolvedPrincipal, err := h.Identity.Resolve(r.Context(), principal.Issuer, principal.Subject, principal.ActorType)
+	if err != nil {
+		problem(w, r, http.StatusForbidden, "IDENTITY_RESOLUTION_FAILED", "the authenticated identity could not be resolved", false)
+		return
+	}
+	operationCtx, trustedContext, err := auth.NewOperationContext(r.Context(), principal, resolvedPrincipal.ID, correlationID(r), time.Now())
 	if err != nil {
 		problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
 		return

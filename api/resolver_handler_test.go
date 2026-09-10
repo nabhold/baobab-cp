@@ -10,6 +10,7 @@ import (
 
 	"github.com/nabhold/baobab-cp/internal/auth"
 	"github.com/nabhold/baobab-cp/internal/domain"
+	"github.com/nabhold/baobab-cp/internal/repository"
 	"github.com/nabhold/baobab-cp/internal/resolver"
 	"github.com/nabhold/baobab-cp/internal/service"
 )
@@ -136,9 +137,12 @@ func TestResolverHandlerDoesNotLeakInternalDenialReason(t *testing.T) {
 	// supplies none) fails deep inside the pipeline with an internal cause
 	// such as "mapping not found". The client must see a fixed, opaque
 	// message instead, mirroring resolveContext's ErrContextDenied handling.
-	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	handler := ResolverHandler{
+		Service:  service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
+		Identity: service.IdentityService{Repository: repository.NewInMemoryRepository(), Provision: service.WorkloadOnlyProvisioningPolicy},
+	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
-	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
 	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000002")
 	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
 	w := httptest.NewRecorder()
@@ -173,6 +177,29 @@ func TestResolverHandlerRejectsMissingCanonicalEntityID(t *testing.T) {
 	handler.Resolve(w, req)
 	if w.Code != http.StatusBadRequest || !bytes.Contains(w.Body.Bytes(), []byte("INVALID_REQUEST")) {
 		t.Fatalf("expected missing canonical_entity_id rejection, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestResolverHandlerRejectsUnresolvableIdentity is Gate IAM-3 phase 4's
+// regression test for ADR-0004 §11 ("No business-domain operation SHALL
+// proceed merely because iss + sub exists"): an authorized, in-scope
+// workload request whose identity cannot be resolved (here, an unset
+// Identity field -- a nil ProvisioningPolicy fails closed per
+// service.IdentityService's own default) must not reach the resolution
+// pipeline at all.
+func TestResolverHandlerRejectsUnresolvableIdentity(t *testing.T) {
+	handler := ResolverHandler{
+		Service:  service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
+		Identity: service.IdentityService{Repository: repository.NewInMemoryRepository()},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("IDENTITY_RESOLUTION_FAILED")) {
+		t.Fatalf("expected unresolvable identity rejection, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

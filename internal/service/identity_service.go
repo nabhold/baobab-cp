@@ -42,6 +42,20 @@ type IdentityService struct {
 	Provision ProvisioningPolicy
 }
 
+// WorkloadOnlyProvisioningPolicy allows automatic Principal provisioning
+// only for workload actors, denying every other actor type. It is meant for
+// call sites reached only after OIDC verification plus required-scope and
+// tenant/client checks already passed -- api.ResolverHandler's /v1/resolve
+// is the one call site as of Gate IAM-3 phase 4. ADR-0007 §46 describes
+// workload onboarding (IAM client registration, scope assignment,
+// credential provisioning) as happening before a workload's first token is
+// ever issued, so a request reaching this policy is already
+// controlled-provisioned at the IAM layer; this just materializes
+// baobab-cp's own identity.principal/external_identity record to match.
+// Human actors are always denied here: ADR-0004 §13 defers human
+// provisioning policy to domain-specific ADRs that don't exist yet.
+func WorkloadOnlyProvisioningPolicy(actorType string) bool { return actorType == "workload" }
+
 // Resolve returns the Principal for (issuer, subject), provisioning one on
 // first authentication if actorType's policy allows it.
 func (s IdentityService) Resolve(ctx context.Context, issuer, subject, actorType string) (domain.Principal, error) {

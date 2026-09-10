@@ -10,23 +10,36 @@ import (
 
 type operationContextKey struct{}
 
-// NewOperationContext derives the identity portion of Context exclusively
-// from a verified Principal. Business dimensions are enriched later from
-// authoritative Control Plane registries, never from request headers/body.
-func NewOperationContext(parent context.Context, principal Principal, correlationID string, now time.Time) (context.Context, domain.Context, error) {
+// NewOperationContext derives the identity portion of Context from a
+// verified Principal plus its resolved canonical identity. Business
+// dimensions are enriched later from authoritative Control Plane
+// registries, never from request headers/body.
+//
+// principalID is the durable domain.Principal.ID resolved from the
+// Principal's (issuer, subject) via service.IdentityService -- ADR-0004
+// §11/§39: the trusted Context is keyed by the canonical identity, not the
+// raw token subject, and callers are expected to have already performed
+// that resolution before calling this function (Gate IAM-3 phase 4,
+// docs/governance/gate-iam-3-canonical-identity-scope.md). This package
+// does not import internal/service or internal/repository itself, to keep
+// token verification/context derivation decoupled from persistence.
+func NewOperationContext(parent context.Context, principal Principal, principalID, correlationID string, now time.Time) (context.Context, domain.Context, error) {
 	if parent == nil {
 		return nil, domain.Context{}, errors.New("parent context is required")
 	}
 	if principal.Subject == "" || principal.TenantID == "" || principal.TokenID == "" {
 		return nil, domain.Context{}, errors.New("verified workload principal is required")
 	}
+	if principalID == "" {
+		return nil, domain.Context{}, errors.New("resolved canonical principal id is required")
+	}
 	resolved := domain.Context{
-		PrincipalID:   principal.Subject,
+		PrincipalID:   principalID,
 		TenantID:      principal.TenantID,
 		CorrelationID: correlationID,
 		ResolvedAt:    now.UTC(),
 		Provenance: map[string]domain.ContextSource{
-			"principal_id": {Source: "verified_access_token", TrustLevel: domain.TrustVerified, Evidence: principal.TokenID},
+			"principal_id": {Source: "resolved_canonical_identity", TrustLevel: domain.TrustVerified, Evidence: principal.TokenID},
 			"tenant_id":    {Source: "verified_access_token", TrustLevel: domain.TrustVerified, Evidence: principal.TokenID},
 		},
 	}
