@@ -21,27 +21,27 @@ func TestResolverHandlerRejectsCallerSuppliedRegistryState(t *testing.T) {
 	body := map[string]any{
 		"tenant_id": "tenant-123",
 		"context": map[string]any{
-			"tenant_id":      "tenant-123",
+			"tenant_id":       "tenant-123",
 			"legal_entity_id": "legal-456",
-			"market_id":      "market-789",
-			"country_code":   "ZA",
-			"currency_code":  "ZAR",
-			"locale":         "en-ZA",
+			"market_id":       "market-789",
+			"country_code":    "ZA",
+			"currency_code":   "ZAR",
+			"locale":          "en-ZA",
 		},
 		"mappings": []map[string]any{{
-			"id":                      "mapping-tenant",
-			"mapping_type":            "IDENTITY",
-			"resolution_mode":         "SINGLE",
-			"canonical_entity_id":     "tenant-123",
+			"id":                         "mapping-tenant",
+			"mapping_type":               "IDENTITY",
+			"resolution_mode":            "SINGLE",
+			"canonical_entity_id":        "tenant-123",
 			"target_canonical_entity_id": "entity-tenant",
-			"scope_id":                "tenant-123",
-			"direction":               "BIDIRECTIONAL",
-			"cardinality":             "ONE_TO_ONE",
-			"authority":               "baobab",
-			"confidence":              "CONFIRMED",
-			"status":                  "ACTIVE",
-			"resolution_priority":     50,
-			"effective_from":          "2025-01-01T00:00:00Z",
+			"scope_id":                   "tenant-123",
+			"direction":                  "BIDIRECTIONAL",
+			"cardinality":                "ONE_TO_ONE",
+			"authority":                  "baobab",
+			"confidence":                 "CONFIRMED",
+			"status":                     "ACTIVE",
+			"resolution_priority":        50,
+			"effective_from":             "2025-01-01T00:00:00Z",
 		}},
 		"bindings": []map[string]any{{
 			"capability_key":     "baobab_trade",
@@ -125,6 +125,35 @@ func TestResolverHandlerRejectsAuthorizationBypass(t *testing.T) {
 	handler.Resolve(w, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected missing-scope rejection, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestResolverHandlerDoesNotLeakInternalDenialReason(t *testing.T) {
+	// ADR-0008 §45 ("Denial Model"): reason codes SHALL not expose sensitive
+	// information indiscriminately to external clients. An authorized
+	// request with nothing to resolve (no mappings/bindings loaded — this
+	// test's ResolutionService has no Repository, and the request body
+	// supplies none) fails deep inside the pipeline with an internal cause
+	// such as "mapping not found". The client must see a fixed, opaque
+	// message instead, mirroring resolveContext's ErrContextDenied handling.
+	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000002")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected fail-closed 400, got %d body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte("RESOLUTION_FAILED")) {
+		t.Fatalf("expected RESOLUTION_FAILED code, got %s", w.Body.String())
+	}
+	for _, leaked := range []string{"mapping not found", "canonical_entity_id", "resolution FAILED", "resolution failed:"} {
+		if bytes.Contains(w.Body.Bytes(), []byte(leaked)) {
+			t.Fatalf("response leaked internal resolver detail %q: %s", leaked, w.Body.String())
+		}
 	}
 }
 

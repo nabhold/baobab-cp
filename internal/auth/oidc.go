@@ -22,6 +22,7 @@ var canonicalScope = regexp.MustCompile(`^[a-z][a-z0-9.-]*:[a-z][a-z0-9.-]*$`)
 
 type Principal struct {
 	Subject   string
+	Issuer    string
 	ActorType string
 	TenantID  string
 	ClientID  string
@@ -93,5 +94,11 @@ func (v *OIDCVerifier) Verify(ctx context.Context, raw string) (Principal, error
 	if len(scopes) == 0 {
 		return Principal{}, fmt.Errorf("%w: scope is required", ErrInvalidToken)
 	}
-	return Principal{Subject: c.Subject, ActorType: c.ActorType, TenantID: c.TenantID, ClientID: c.ClientID, TokenID: c.TokenID, Scopes: scopes}, nil
+	// ADR-0003 ("Identity Authority and Trust Boundaries"): the verified
+	// issuer is part of the identity itself — a bare `sub` is only unique
+	// within one issuer, and per ADR-0004 a stable canonical identity is
+	// ultimately keyed by (issuer, subject), not subject alone. token.Issuer
+	// comes from the verified ID token (checked against the configured
+	// provider during v.verifier.Verify above), not from an unverified claim.
+	return Principal{Subject: c.Subject, Issuer: token.Issuer, ActorType: c.ActorType, TenantID: c.TenantID, ClientID: c.ClientID, TokenID: c.TokenID, Scopes: scopes}, nil
 }

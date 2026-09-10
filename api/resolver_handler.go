@@ -53,7 +53,15 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		Context:  trustedContext,
 	})
 	if err != nil {
-		problem(w, r, http.StatusBadRequest, "RESOLUTION_FAILED", err.Error(), false)
+		// ADR-0008 §45 ("Denial Model"): reason codes SHALL not expose
+		// sensitive information indiscriminately to external clients. err
+		// here is a *resolver.ResolutionError wrapping the pipeline's raw
+		// internal cause (mapping/capability/policy/topology internals,
+		// e.g. "mapping not found", "engine instance missing") — that detail
+		// is an operator diagnostic, not a client-facing message. Mirrors
+		// how resolveContext (api/context.go) already treats
+		// store.ErrContextDenied with a fixed, opaque detail string.
+		problem(w, r, http.StatusBadRequest, "RESOLUTION_FAILED", "the request could not be resolved to an authorized routing decision", false)
 		return
 	}
 

@@ -69,6 +69,9 @@ func TestOIDCVerifierAcceptsContractToken(t *testing.T) {
 	if principal.Subject != "admin-123" || principal.ActorType != "human" || !principal.HasScope("tenant:write") {
 		t.Fatalf("unexpected principal: %#v", principal)
 	}
+	if principal.Issuer != issuer.server.URL {
+		t.Fatalf("expected verified issuer %q on principal, got %q", issuer.server.URL, principal.Issuer)
+	}
 }
 
 func TestOIDCVerifierRejectsExcessiveLifetime(t *testing.T) {
