@@ -71,12 +71,7 @@ func (CapabilityResolverImpl) Resolve(_ context.Context, q CapabilityResolutionQ
 			if !ok {
 				continue
 			}
-			match := DefaultScopeMatcher{}.Match(q.Context, ScopeValues{
-				TenantID: scope.TenantID, LegalEntityID: scope.LegalEntityID, MarketID: scope.MarketID,
-				CountryCode: scope.CountryCode, DigitalEstateID: scope.DigitalEstateID,
-				DigitalPropertyID: scope.DigitalPropertyID, ChannelID: scope.ChannelID,
-				CurrencyCode: scope.CurrencyCode, Locale: scope.Locale, Environment: scope.Environment,
-			})
+			match := DefaultScopeMatcher{}.Match(q.Context, scope)
 			if !match.Compatible {
 				continue
 			}

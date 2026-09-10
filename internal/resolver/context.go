@@ -77,22 +77,6 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 	return resolved, nil
 }
 
-// ScopeValues represents a single logical scope dimension payload.
-type ScopeValues struct {
-	TenantID          string
-	LegalEntityID     string
-	MarketID          string
-	CountryCode       string
-	DigitalEstateID   string
-	DigitalPropertyID string
-	ChannelID         string
-	CurrencyCode      string
-	Locale            string
-	Environment       string
-	EngineID          string
-	EngineInstanceID  string
-}
-
 // ScopeMatch is the result of comparing a context against a scope.
 type ScopeMatch struct {
 	Compatible  bool
@@ -105,7 +89,15 @@ type ScopeMatch struct {
 // DefaultScopeMatcher is the default deterministic scope matcher.
 type DefaultScopeMatcher struct{}
 
-func (DefaultScopeMatcher) Match(ctx Context, scope ScopeValues) ScopeMatch {
+// Match compares a Context against a domain.MappingScope directly -- this
+// used to take a package-local ScopeValues struct that duplicated
+// domain.MappingScope's own dimension fields field-for-field, requiring a
+// manual conversion at every call site (audit finding: "Runtime resolver
+// types duplicate canonical concepts", docs/reconciliation/
+// platform-resolution-spine-audit.md Gate 1). domain.MappingScope is the
+// one canonical model for this concept; ID and EntityType (the two fields
+// ScopeValues didn't carry) are simply unused by the matcher below.
+func (DefaultScopeMatcher) Match(ctx Context, scope domain.MappingScope) ScopeMatch {
 	matched := []string{}
 	inherited := []string{}
 	rejectedBy := []string{}

@@ -105,7 +105,7 @@ func resolveMapping(ctx Context, candidates []domain.Mapping, scopes map[string]
 			if !ok {
 				continue
 			}
-			match := DefaultScopeMatcher{}.Match(ctx, scopeValues(scope))
+			match := DefaultScopeMatcher{}.Match(ctx, scope)
 			if !match.Compatible {
 				continue
 			}
@@ -136,15 +136,6 @@ func resolveMapping(ctx Context, candidates []domain.Mapping, scopes map[string]
 
 func sameMappingRank(left, right rankedMapping) bool {
 	return left.specificity == right.specificity && left.mapping.ResolutionPriority == right.mapping.ResolutionPriority && confidenceRank(left.mapping.Confidence) == confidenceRank(right.mapping.Confidence)
-}
-
-func scopeValues(scope domain.MappingScope) ScopeValues {
-	return ScopeValues{
-		TenantID: scope.TenantID, LegalEntityID: scope.LegalEntityID, MarketID: scope.MarketID,
-		CountryCode: scope.CountryCode, DigitalEstateID: scope.DigitalEstateID, DigitalPropertyID: scope.DigitalPropertyID,
-		ChannelID: scope.ChannelID, CurrencyCode: scope.CurrencyCode, Locale: scope.Locale, Environment: scope.Environment,
-		EngineID: scope.EngineID, EngineInstanceID: scope.EngineInstanceID,
-	}
 }
 
 func legacyScopeSpecificity(ctx Context, scopeID string) int {
