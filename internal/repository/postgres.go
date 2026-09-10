@@ -47,6 +47,7 @@ var _ IdentityRepository = (*PostgresRepository)(nil)
 var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
 var _ IdentityLinkingRepository = (*PostgresRepository)(nil)
 var _ IdentityUnlinkingRepository = (*PostgresRepository)(nil)
+var _ IdentityMergeRepository = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -573,6 +574,126 @@ func (r *PostgresRepository) UnlinkExternalIdentityAudited(ctx context.Context, 
 		actor.ActorID, actor.ActorType, actor.ClientID, actor.TokenID, actor.CorrelationID,
 		"identity.external_identity.unlinked", "principal:"+principalID, "success", reason, payload); err != nil {
 		return fmt.Errorf("write unlink audit record: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// MergePrincipalsAudited implements IdentityMergeRepository (ADR-0004
+// §19-21). It locks both Principal rows (SELECT ... FOR UPDATE, ordered by
+// ID to avoid deadlocking against a concurrent merge in the opposite
+// direction), transfers every external_identity and identity_reference row
+// from source to target via UPDATE ... RETURNING (safe from collision:
+// neither UNIQUE(issuer, subject) nor UNIQUE(engine, external_type,
+// external_id) includes principal_id), archives the source, and writes two
+// audit_events rows -- one targeting the source, one targeting the target,
+// sharing actor.CorrelationID -- so either Principal's own audit trail
+// reveals the merge (ADR-0004 §21 requires preserving both "source
+// identity" and "target identity" as auditable facts).
+func (r *PostgresRepository) MergePrincipalsAudited(ctx context.Context, sourcePrincipalID, targetPrincipalID string, actor AuditActor, reason string) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if sourcePrincipalID == "" || targetPrincipalID == "" {
+		return errors.New("source and target principal ids are required")
+	}
+	if sourcePrincipalID == targetPrincipalID {
+		return ErrMergeSourceEqualsTarget
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock in a fixed order (by ID) regardless of which is source/target,
+	// so two concurrent merges naming the same pair in opposite directions
+	// can't deadlock against each other.
+	first, second := sourcePrincipalID, targetPrincipalID
+	if second < first {
+		first, second = second, first
+	}
+	statuses := map[string]string{}
+	for _, id := range []string{first, second} {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT status FROM identity.principal WHERE principal_id = $1::uuid FOR UPDATE`, id).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrIdentityNotFound
+			}
+			return fmt.Errorf("lock principal %s: %w", id, err)
+		}
+		statuses[id] = status
+	}
+	if statuses[sourcePrincipalID] == "ARCHIVED" || statuses[targetPrincipalID] == "ARCHIVED" {
+		return ErrMergeNotEligible
+	}
+
+	extRows, err := tx.Query(ctx, `
+		UPDATE identity.external_identity SET principal_id = $2::uuid
+		WHERE principal_id = $1::uuid
+		RETURNING issuer, subject, provider_type, status`, sourcePrincipalID, targetPrincipalID)
+	if err != nil {
+		return fmt.Errorf("transfer external identities: %w", err)
+	}
+	var transferredExternal []map[string]string
+	for extRows.Next() {
+		var issuer, subject, providerType, status string
+		if err := extRows.Scan(&issuer, &subject, &providerType, &status); err != nil {
+			extRows.Close()
+			return fmt.Errorf("scan transferred external identity: %w", err)
+		}
+		transferredExternal = append(transferredExternal, map[string]string{"issuer": issuer, "subject": subject, "provider_type": providerType, "status": status})
+	}
+	extRowsErr := extRows.Err()
+	extRows.Close()
+	if extRowsErr != nil {
+		return fmt.Errorf("transfer external identities: %w", extRowsErr)
+	}
+
+	refRows, err := tx.Query(ctx, `
+		UPDATE identity.identity_reference SET principal_id = $2::uuid
+		WHERE principal_id = $1::uuid
+		RETURNING engine, external_type, external_id`, sourcePrincipalID, targetPrincipalID)
+	if err != nil {
+		return fmt.Errorf("transfer identity references: %w", err)
+	}
+	var transferredReferences []map[string]string
+	for refRows.Next() {
+		var engine, externalType, externalID string
+		if err := refRows.Scan(&engine, &externalType, &externalID); err != nil {
+			refRows.Close()
+			return fmt.Errorf("scan transferred identity reference: %w", err)
+		}
+		transferredReferences = append(transferredReferences, map[string]string{"engine": engine, "external_type": externalType, "external_id": externalID})
+	}
+	refRowsErr := refRows.Err()
+	refRows.Close()
+	if refRowsErr != nil {
+		return fmt.Errorf("transfer identity references: %w", refRowsErr)
+	}
+
+	if _, err = tx.Exec(ctx, `UPDATE identity.principal SET status = 'ARCHIVED', updated_at = now() WHERE principal_id = $1::uuid`, sourcePrincipalID); err != nil {
+		return fmt.Errorf("archive source principal: %w", err)
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"source_principal_id":             sourcePrincipalID,
+		"target_principal_id":             targetPrincipalID,
+		"transferred_external_identities": transferredExternal,
+		"transferred_identity_references": transferredReferences,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal merge audit payload: %w", err)
+	}
+	for _, target := range []string{"principal:" + sourcePrincipalID, "principal:" + targetPrincipalID} {
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO audit_events(actor_id, actor_type, client_id, token_id, correlation_id, action, target, result, policy_decision, payload)
+			VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::uuid, $6, $7, $8, $9, $10)`,
+			actor.ActorID, actor.ActorType, actor.ClientID, actor.TokenID, actor.CorrelationID,
+			"identity.principal.merged", target, "success", reason, payload); err != nil {
+			return fmt.Errorf("write merge audit record: %w", err)
+		}
 	}
 
 	return tx.Commit(ctx)

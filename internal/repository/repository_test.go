@@ -446,3 +446,124 @@ func TestInMemoryRepositoryUnlinkRejectsMismatchOrUnknown(t *testing.T) {
 		t.Fatalf("expected ErrExternalIdentityNotLinked for an unknown external identity, got %v", err)
 	}
 }
+
+// TestInMemoryRepositoryMergePrincipalsAudited exercises Gate IAM-3 phase
+// 6's audited merge flow (ADR-0004 §19-21): every ExternalIdentity and
+// IdentityReference belonging to the source Principal transfers to the
+// target, the source is archived (never deleted), the target keeps its own
+// pre-existing credentials, and the merge is recorded in MergeAudit.
+func TestInMemoryRepositoryMergePrincipalsAudited(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	source := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	target := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, source); err != nil {
+		t.Fatalf("create source failed: %v", err)
+	}
+	if err := repo.CreateIdentity(ctx, target); err != nil {
+		t.Fatalf("create target failed: %v", err)
+	}
+
+	sourceExternal := domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: source.ID, Issuer: "https://accounts.google.com", Subject: "google-sub-merge", Status: "ACTIVE"}
+	if err := repo.LinkExternalIdentity(ctx, sourceExternal); err != nil {
+		t.Fatalf("link source external identity failed: %v", err)
+	}
+	sourceReference := domain.IdentityReference{ID: domain.NewIdentityReferenceID(), PrincipalID: source.ID, Engine: "baobab-trade", ExternalType: "customer", ExternalID: "C-merge", Status: "ACTIVE"}
+	if err := repo.CreateIdentityReference(ctx, sourceReference); err != nil {
+		t.Fatalf("create source identity reference failed: %v", err)
+	}
+	targetExternal := domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: target.ID, Issuer: "https://iam.nabhold.com/realms/baobab", Subject: "keycloak-sub-merge", Status: "ACTIVE"}
+	if err := repo.LinkExternalIdentity(ctx, targetExternal); err != nil {
+		t.Fatalf("link target external identity failed: %v", err)
+	}
+
+	actor := AuditActor{ActorID: "admin-1", ActorType: "human"}
+	if err := repo.MergePrincipalsAudited(ctx, source.ID, target.ID, actor, "duplicate accounts for the same person"); err != nil {
+		t.Fatalf("merge principals audited failed: %v", err)
+	}
+
+	archivedSource, err := repo.GetPrincipal(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("expected the archived source to remain resolvable, got %v", err)
+	}
+	if archivedSource.Status != "ARCHIVED" {
+		t.Fatalf("expected source status ARCHIVED, got %q", archivedSource.Status)
+	}
+
+	resolved, err := repo.ResolveIdentity(ctx, sourceExternal.Issuer, sourceExternal.Subject)
+	if err != nil || resolved.ID != target.ID {
+		t.Fatalf("expected the transferred external identity to resolve to the target, got principal=%+v err=%v", resolved, err)
+	}
+	resolved, err = repo.ResolveIdentity(ctx, targetExternal.Issuer, targetExternal.Subject)
+	if err != nil || resolved.ID != target.ID {
+		t.Fatalf("expected the target's own pre-existing external identity to still resolve to the target, got principal=%+v err=%v", resolved, err)
+	}
+
+	transferredRef, err := repo.ResolveIdentityReference(ctx, sourceReference.Engine, sourceReference.ExternalType, sourceReference.ExternalID)
+	if err != nil || transferredRef.PrincipalID != target.ID {
+		t.Fatalf("expected the transferred identity reference to now belong to the target, got %+v err=%v", transferredRef, err)
+	}
+
+	if len(repo.MergeAudit) != 1 {
+		t.Fatalf("expected 1 merge audit record, got %d", len(repo.MergeAudit))
+	}
+	record := repo.MergeAudit[0]
+	if record.SourcePrincipalID != source.ID || record.TargetPrincipalID != target.ID {
+		t.Fatalf("unexpected merge audit record: %+v", record)
+	}
+	if len(record.TransferredExternalIdentities) != 1 || len(record.TransferredIdentityReferences) != 1 {
+		t.Fatalf("expected exactly the source's own rows to be recorded as transferred, got %+v", record)
+	}
+}
+
+func TestInMemoryRepositoryMergeRejectsSameSourceAndTarget(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	if err := repo.MergePrincipalsAudited(ctx, principal.ID, principal.ID, AuditActor{}, "self-merge"); !errors.Is(err, ErrMergeSourceEqualsTarget) {
+		t.Fatalf("expected ErrMergeSourceEqualsTarget, got %v", err)
+	}
+}
+
+func TestInMemoryRepositoryMergeRejectsUnknownPrincipal(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	if err := repo.MergePrincipalsAudited(ctx, "does-not-exist", principal.ID, AuditActor{}, "unknown source"); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("expected ErrIdentityNotFound for an unknown source, got %v", err)
+	}
+	if err := repo.MergePrincipalsAudited(ctx, principal.ID, "does-not-exist", AuditActor{}, "unknown target"); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("expected ErrIdentityNotFound for an unknown target, got %v", err)
+	}
+}
+
+func TestInMemoryRepositoryMergeRejectsAlreadyArchivedPrincipal(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	a := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	b := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	c := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	for _, p := range []domain.Principal{a, b, c} {
+		if err := repo.CreateIdentity(ctx, p); err != nil {
+			t.Fatalf("create identity failed: %v", err)
+		}
+	}
+	actor := AuditActor{ActorID: "admin-1", ActorType: "human"}
+	if err := repo.MergePrincipalsAudited(ctx, a.ID, b.ID, actor, "first merge"); err != nil {
+		t.Fatalf("first merge failed: %v", err)
+	}
+	// a is now ARCHIVED -- it cannot be a source again, nor a target.
+	if err := repo.MergePrincipalsAudited(ctx, a.ID, c.ID, actor, "archived source"); !errors.Is(err, ErrMergeNotEligible) {
+		t.Fatalf("expected ErrMergeNotEligible for an archived source, got %v", err)
+	}
+	if err := repo.MergePrincipalsAudited(ctx, c.ID, a.ID, actor, "archived target"); !errors.Is(err, ErrMergeNotEligible) {
+		t.Fatalf("expected ErrMergeNotEligible for an archived target, got %v", err)
+	}
+}

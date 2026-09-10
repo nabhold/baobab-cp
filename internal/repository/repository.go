@@ -142,6 +142,47 @@ type IdentityUnlinkingRepository interface {
 	UnlinkExternalIdentityAudited(ctx context.Context, principalID, issuer, subject string, administrative bool, actor AuditActor, reason string) error
 }
 
+// ErrMergeSourceEqualsTarget is returned when MergePrincipalsAudited is
+// called with the same Principal as both source and target.
+var ErrMergeSourceEqualsTarget = errors.New("merge source and target principal must differ")
+
+// ErrMergeNotEligible is returned when either the source or target
+// Principal of a merge is already ARCHIVED -- an archived Principal is
+// either already the retired half of a previous merge (invalid as a
+// source: it has nothing left to transfer) or not a valid consolidation
+// target (an archived identity must not become canonical again).
+var ErrMergeNotEligible = errors.New("merge source or target principal is not eligible for merge")
+
+// IdentityMergeRepository is the Gate IAM-3 phase 6 contract for ADR-0004
+// §19-21's identity merge: consolidating two Principals discovered to
+// represent the same actor into one. MergePrincipalsAudited transfers every
+// ExternalIdentity and IdentityReference row from sourcePrincipalID to
+// targetPrincipalID (safe from collision by construction:
+// UNIQUE(issuer, subject) and UNIQUE(engine, external_type, external_id)
+// both exclude principal_id, so re-pointing ownership can never violate
+// either constraint) and archives the source -- ADR-0004 §20: "One identity
+// SHALL remain canonical. The retired identity SHALL not simply disappear."
+// The source Principal row is archived (status ARCHIVED), never deleted,
+// and remains resolvable via GetPrincipal.
+//
+// nabhold/shared's principal.schema.json is additionalProperties: false
+// with no merged-into field, and ADR-0004 §21 only requires the retired
+// identity remain resolvable "through historical audit records" (not via a
+// live pointer) -- so provenance is carried entirely by the two
+// audit_events rows this method writes (one targeting the source, one
+// targeting the target, sharing one correlation ID), not by a schema
+// change. Each row's payload captures everything §21 requires: source
+// identity, target identity, actor, reason, timestamp (audit_events'
+// occurred_at), and every transferred external identity and engine
+// mapping.
+//
+// Merge/split of business relationships this repository doesn't model yet
+// (tenant memberships, buyer/supplier relationships) is explicitly out of
+// scope -- see docs/governance/gate-iam-3-canonical-identity-scope.md §4.
+type IdentityMergeRepository interface {
+	MergePrincipalsAudited(ctx context.Context, sourcePrincipalID, targetPrincipalID string, actor AuditActor, reason string) error
+}
+
 // ErrIdentityReferenceNotFound is returned by ResolveIdentityReference when
 // no mapping exists for the given engine-native actor -- the "absent"
 // branch of ADR-0004 §23-27's engine-reference resolution, mirroring
@@ -180,6 +221,8 @@ type Repository struct {
 	LinkAudit []LinkAuditRecord
 	// UnlinkAudit is LinkAudit's counterpart for UnlinkExternalIdentityAudited.
 	UnlinkAudit []UnlinkAuditRecord
+	// MergeAudit is LinkAudit's counterpart for MergePrincipalsAudited.
+	MergeAudit []MergeAuditRecord
 }
 
 // LinkAuditRecord is the in-memory equivalent of the audit_events row
@@ -201,6 +244,17 @@ type UnlinkAuditRecord struct {
 	Reason         string
 }
 
+// MergeAuditRecord is the in-memory equivalent of the two audit_events rows
+// PostgresRepository.MergePrincipalsAudited writes.
+type MergeAuditRecord struct {
+	SourcePrincipalID             string
+	TargetPrincipalID             string
+	TransferredExternalIdentities []domain.ExternalIdentity
+	TransferredIdentityReferences []domain.IdentityReference
+	Actor                         AuditActor
+	Reason                        string
+}
+
 var _ MappingRepository = (*Repository)(nil)
 var _ CapabilityRepository = (*Repository)(nil)
 var _ ResolverRepository = (*Repository)(nil)
@@ -211,6 +265,7 @@ var _ IdentityRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
 var _ IdentityUnlinkingRepository = (*Repository)(nil)
+var _ IdentityMergeRepository = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
@@ -434,6 +489,61 @@ func (r *Repository) UnlinkExternalIdentityAudited(_ context.Context, principalI
 	r.UnlinkAudit = append(r.UnlinkAudit, UnlinkAuditRecord{
 		PrincipalID: principalID, Issuer: issuer, Subject: subject,
 		Administrative: administrative, Actor: actor, Reason: reason,
+	})
+	return nil
+}
+
+func (r *Repository) MergePrincipalsAudited(_ context.Context, sourcePrincipalID, targetPrincipalID string, actor AuditActor, reason string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if sourcePrincipalID == "" || targetPrincipalID == "" {
+		return errors.New("source and target principal ids are required")
+	}
+	if sourcePrincipalID == targetPrincipalID {
+		return ErrMergeSourceEqualsTarget
+	}
+	source, ok := r.Principals[sourcePrincipalID]
+	if !ok {
+		return ErrIdentityNotFound
+	}
+	target, ok := r.Principals[targetPrincipalID]
+	if !ok {
+		return ErrIdentityNotFound
+	}
+	if source.Status == "ARCHIVED" || target.Status == "ARCHIVED" {
+		return ErrMergeNotEligible
+	}
+
+	var transferredExternal []domain.ExternalIdentity
+	for key, external := range r.ExternalIdentities {
+		if external.PrincipalID != sourcePrincipalID {
+			continue
+		}
+		external.PrincipalID = targetPrincipalID
+		r.ExternalIdentities[key] = external
+		transferredExternal = append(transferredExternal, external)
+	}
+	var transferredReferences []domain.IdentityReference
+	for key, reference := range r.IdentityReferences {
+		if reference.PrincipalID != sourcePrincipalID {
+			continue
+		}
+		reference.PrincipalID = targetPrincipalID
+		r.IdentityReferences[key] = reference
+		transferredReferences = append(transferredReferences, reference)
+	}
+
+	source.Status = "ARCHIVED"
+	r.Principals[sourcePrincipalID] = source
+
+	r.MergeAudit = append(r.MergeAudit, MergeAuditRecord{
+		SourcePrincipalID:             sourcePrincipalID,
+		TargetPrincipalID:             targetPrincipalID,
+		TransferredExternalIdentities: transferredExternal,
+		TransferredIdentityReferences: transferredReferences,
+		Actor:                         actor,
+		Reason:                        reason,
 	})
 	return nil
 }
