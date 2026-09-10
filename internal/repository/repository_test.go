@@ -343,3 +343,106 @@ func TestInMemoryRepositoryLinkExternalIdentityAudited(t *testing.T) {
 		t.Fatalf("expected no additional audit record on a failed link, got %d total", len(repo.LinkAudit))
 	}
 }
+
+// TestInMemoryRepositoryUnlinkExternalIdentityAudited exercises Gate IAM-3
+// phase 6's audited unlinking flow (ADR-0004 §18): unlinking one of two
+// ACTIVE credentials marks it UNLINKED (never deleted), records an audit
+// entry, and the unlinked credential no longer resolves while the
+// remaining one still does.
+func TestInMemoryRepositoryUnlinkExternalIdentityAudited(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	primary := domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: principal.ID, Issuer: "https://iam.nabhold.com/realms/baobab", Subject: "keycloak-sub-1", Status: "ACTIVE"}
+	secondary := domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: principal.ID, Issuer: "https://accounts.google.com", Subject: "google-sub-1", Status: "ACTIVE"}
+	if err := repo.LinkExternalIdentity(ctx, primary); err != nil {
+		t.Fatalf("link primary failed: %v", err)
+	}
+	if err := repo.LinkExternalIdentity(ctx, secondary); err != nil {
+		t.Fatalf("link secondary failed: %v", err)
+	}
+
+	actor := AuditActor{ActorID: principal.ID, ActorType: "human"}
+	if err := repo.UnlinkExternalIdentityAudited(ctx, principal.ID, secondary.Issuer, secondary.Subject, false, actor, "user removed a login method"); err != nil {
+		t.Fatalf("unlink external identity audited failed: %v", err)
+	}
+	if len(repo.UnlinkAudit) != 1 || repo.UnlinkAudit[0].Administrative {
+		t.Fatalf("unexpected unlink audit trail: %+v", repo.UnlinkAudit)
+	}
+
+	if _, err := repo.ResolveIdentity(ctx, secondary.Issuer, secondary.Subject); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("expected the unlinked identity to no longer resolve, got %v", err)
+	}
+	resolved, err := repo.ResolveIdentity(ctx, primary.Issuer, primary.Subject)
+	if err != nil || resolved.ID != principal.ID {
+		t.Fatalf("expected the remaining credential to still resolve, got principal=%+v err=%v", resolved, err)
+	}
+}
+
+// TestInMemoryRepositoryUnlinkDeniesLastCredential covers ADR-0004 §18's
+// core guard: unlinking a Principal's only ACTIVE credential is denied
+// unless the operation is administrative.
+func TestInMemoryRepositoryUnlinkDeniesLastCredential(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	only := domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: principal.ID, Issuer: "https://iam.nabhold.com/realms/baobab", Subject: "keycloak-sub-only", Status: "ACTIVE"}
+	if err := repo.LinkExternalIdentity(ctx, only); err != nil {
+		t.Fatalf("link failed: %v", err)
+	}
+
+	actor := AuditActor{ActorID: principal.ID, ActorType: "human"}
+	if err := repo.UnlinkExternalIdentityAudited(ctx, principal.ID, only.Issuer, only.Subject, false, actor, "attempted self-unlink"); !errors.Is(err, ErrLastCredentialDenied) {
+		t.Fatalf("expected ErrLastCredentialDenied, got %v", err)
+	}
+	if len(repo.UnlinkAudit) != 0 {
+		t.Fatalf("expected no audit record for a denied unlink, got %d", len(repo.UnlinkAudit))
+	}
+	resolved, err := repo.ResolveIdentity(ctx, only.Issuer, only.Subject)
+	if err != nil || resolved.ID != principal.ID {
+		t.Fatalf("expected the last credential to remain linked, got principal=%+v err=%v", resolved, err)
+	}
+
+	// Administrative unlink bypasses the guard (§18: "administrative
+	// recovery; explicit account disablement").
+	if err := repo.UnlinkExternalIdentityAudited(ctx, principal.ID, only.Issuer, only.Subject, true, actor, "administrative account disablement"); err != nil {
+		t.Fatalf("expected administrative unlink of the last credential to succeed, got %v", err)
+	}
+	if len(repo.UnlinkAudit) != 1 || !repo.UnlinkAudit[0].Administrative {
+		t.Fatalf("unexpected unlink audit trail: %+v", repo.UnlinkAudit)
+	}
+}
+
+func TestInMemoryRepositoryUnlinkRejectsMismatchOrUnknown(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	other := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	if err := repo.CreateIdentity(ctx, other); err != nil {
+		t.Fatalf("create second identity failed: %v", err)
+	}
+	linked := domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: principal.ID, Issuer: "https://iam.nabhold.com/realms/baobab", Subject: "keycloak-sub-2", Status: "ACTIVE"}
+	if err := repo.LinkExternalIdentity(ctx, linked); err != nil {
+		t.Fatalf("link failed: %v", err)
+	}
+
+	actor := AuditActor{ActorID: other.ID, ActorType: "human"}
+	if err := repo.UnlinkExternalIdentityAudited(ctx, other.ID, linked.Issuer, linked.Subject, false, actor, "wrong principal"); !errors.Is(err, ErrExternalIdentityNotLinked) {
+		t.Fatalf("expected ErrExternalIdentityNotLinked for a mismatched principal, got %v", err)
+	}
+	if err := repo.UnlinkExternalIdentityAudited(ctx, principal.ID, "https://unknown.example", "no-such-subject", false, actor, "unknown identity"); !errors.Is(err, ErrExternalIdentityNotLinked) {
+		t.Fatalf("expected ErrExternalIdentityNotLinked for an unknown external identity, got %v", err)
+	}
+}

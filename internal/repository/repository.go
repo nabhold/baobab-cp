@@ -112,6 +112,36 @@ type IdentityLinkingRepository interface {
 	LinkExternalIdentityAudited(ctx context.Context, external domain.ExternalIdentity, actor AuditActor, reason string) error
 }
 
+// ErrExternalIdentityNotLinked is returned by UnlinkExternalIdentityAudited
+// when the requested (issuer, subject) is not an ACTIVE ExternalIdentity of
+// the given Principal -- it doesn't exist, belongs to a different
+// Principal, or has already been unlinked/disabled/revoked.
+var ErrExternalIdentityNotLinked = errors.New("external identity is not an active credential of this principal")
+
+// ErrLastCredentialDenied is returned when unlinking would leave a
+// Principal with no remaining ACTIVE ExternalIdentity and the caller did
+// not mark the operation administrative -- ADR-0004 §18: "Unlinking SHALL
+// verify that the actor will not be left without a valid authentication
+// path unless the operation is explicitly administrative."
+var ErrLastCredentialDenied = errors.New("unlinking this identity would leave the principal without any active credential")
+
+// IdentityUnlinkingRepository is the Gate IAM-3 phase 6 contract for
+// ADR-0004 §18's identity-unlinking flow. UnlinkExternalIdentityAudited
+// marks the (issuer, subject) ExternalIdentity belonging to principalID as
+// UNLINKED (never deleted -- ADR-0004 §34/§21's "retired identity SHALL
+// not simply disappear" spirit, though written for canonical identities,
+// applies just as well to a single credential's history) rather than
+// deleting the row. Denies the operation with ErrLastCredentialDenied
+// unless administrative is true and the Principal would otherwise be left
+// with zero ACTIVE ExternalIdentities -- callers set administrative for
+// explicit administrative recovery flows (§18's own example: "establishing
+// another credential first; administrative recovery; explicit account
+// disablement"). Like LinkExternalIdentityAudited, always writes an
+// audit_events row in the same transaction (ADR-0004 §52).
+type IdentityUnlinkingRepository interface {
+	UnlinkExternalIdentityAudited(ctx context.Context, principalID, issuer, subject string, administrative bool, actor AuditActor, reason string) error
+}
+
 // ErrIdentityReferenceNotFound is returned by ResolveIdentityReference when
 // no mapping exists for the given engine-native actor -- the "absent"
 // branch of ADR-0004 §23-27's engine-reference resolution, mirroring
@@ -148,6 +178,8 @@ type Repository struct {
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
 	LinkAudit []LinkAuditRecord
+	// UnlinkAudit is LinkAudit's counterpart for UnlinkExternalIdentityAudited.
+	UnlinkAudit []UnlinkAuditRecord
 }
 
 // LinkAuditRecord is the in-memory equivalent of the audit_events row
@@ -156,6 +188,17 @@ type LinkAuditRecord struct {
 	External domain.ExternalIdentity
 	Actor    AuditActor
 	Reason   string
+}
+
+// UnlinkAuditRecord is the in-memory equivalent of the audit_events row
+// PostgresRepository.UnlinkExternalIdentityAudited writes.
+type UnlinkAuditRecord struct {
+	PrincipalID    string
+	Issuer         string
+	Subject        string
+	Administrative bool
+	Actor          AuditActor
+	Reason         string
 }
 
 var _ MappingRepository = (*Repository)(nil)
@@ -167,6 +210,7 @@ var _ MappingScopeWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
+var _ IdentityUnlinkingRepository = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
@@ -291,7 +335,11 @@ func (r *Repository) ResolveIdentity(_ context.Context, issuer, subject string) 
 		return domain.Principal{}, errors.New("repository is nil")
 	}
 	external, ok := r.ExternalIdentities[externalIdentityKey(issuer, subject)]
-	if !ok {
+	if !ok || external.Status != "ACTIVE" {
+		// ADR-0004 §32: external identities may independently be UNLINKED,
+		// DISABLED or REVOKED -- such a row must not resolve, otherwise
+		// UnlinkExternalIdentityAudited (Gate IAM-3 phase 6) would leave a
+		// still-usable authentication path behind it.
 		return domain.Principal{}, ErrIdentityNotFound
 	}
 	principal, ok := r.Principals[external.PrincipalID]
@@ -358,6 +406,35 @@ func (r *Repository) LinkExternalIdentityAudited(ctx context.Context, external d
 		return err
 	}
 	r.LinkAudit = append(r.LinkAudit, LinkAuditRecord{External: external, Actor: actor, Reason: reason})
+	return nil
+}
+
+func (r *Repository) UnlinkExternalIdentityAudited(_ context.Context, principalID, issuer, subject string, administrative bool, actor AuditActor, reason string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	key := externalIdentityKey(issuer, subject)
+	external, ok := r.ExternalIdentities[key]
+	if !ok || external.PrincipalID != principalID || external.Status != "ACTIVE" {
+		return ErrExternalIdentityNotLinked
+	}
+	if !administrative {
+		activeCount := 0
+		for _, e := range r.ExternalIdentities {
+			if e.PrincipalID == principalID && e.Status == "ACTIVE" {
+				activeCount++
+			}
+		}
+		if activeCount <= 1 {
+			return ErrLastCredentialDenied
+		}
+	}
+	external.Status = "UNLINKED"
+	r.ExternalIdentities[key] = external
+	r.UnlinkAudit = append(r.UnlinkAudit, UnlinkAuditRecord{
+		PrincipalID: principalID, Issuer: issuer, Subject: subject,
+		Administrative: administrative, Actor: actor, Reason: reason,
+	})
 	return nil
 }
 
