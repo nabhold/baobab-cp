@@ -1,6 +1,10 @@
 package resolver
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/nabhold/baobab-cp/internal/domain"
+)
 
 func TestScopeMatcherPrefersMoreSpecificMatch(t *testing.T) {
 	matcher := DefaultScopeMatcher{}
@@ -13,7 +17,7 @@ func TestScopeMatcherPrefersMoreSpecificMatch(t *testing.T) {
 		Locale:        "en-ZA",
 	}
 
-	scope := ScopeValues{
+	scope := domain.MappingScope{
 		TenantID:      "tenant-123",
 		LegalEntityID: "legal-456",
 		MarketID:      "market-789",
