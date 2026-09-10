@@ -137,7 +137,7 @@ func TestResolverHandlerDoesNotLeakInternalDenialReason(t *testing.T) {
 	// such as "mapping not found". The client must see a fixed, opaque
 	// message instead, mirroring resolveContext's ErrContextDenied handling.
 	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
-	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123"}`)))
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
 	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
 	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000002")
 	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
@@ -150,10 +150,29 @@ func TestResolverHandlerDoesNotLeakInternalDenialReason(t *testing.T) {
 	if !bytes.Contains(w.Body.Bytes(), []byte("RESOLUTION_FAILED")) {
 		t.Fatalf("expected RESOLUTION_FAILED code, got %s", w.Body.String())
 	}
-	for _, leaked := range []string{"mapping not found", "canonical_entity_id", "resolution FAILED", "resolution failed:"} {
+	for _, leaked := range []string{"mapping not found", "resolution FAILED", "resolution failed:"} {
 		if bytes.Contains(w.Body.Bytes(), []byte(leaked)) {
 			t.Fatalf("response leaked internal resolver detail %q: %s", leaked, w.Body.String())
 		}
+	}
+}
+
+// TestResolverHandlerRejectsMissingCanonicalEntityID is a regression test
+// for docs/governance/gate-iam-0-discovery.md R-3: contracts/control-plane/
+// v1/canonical-mapping.schema.json's resolutionRequest has always required
+// canonical_entity_id, but this handler never accepted the field at all, so
+// there was no way for a caller to supply one -- every request silently
+// resolved against the tenant instead of a real entity.
+func TestResolverHandlerRejectsMissingCanonicalEntityID(t *testing.T) {
+	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusBadRequest || !bytes.Contains(w.Body.Bytes(), []byte("INVALID_REQUEST")) {
+		t.Fatalf("expected missing canonical_entity_id rejection, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 

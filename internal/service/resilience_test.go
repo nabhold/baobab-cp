@@ -27,9 +27,10 @@ func (failingResolverRepository) ListActiveInstances(context.Context, string) ([
 func TestResolutionServiceRepositoryFailureFailsClosed(t *testing.T) {
 	service := ResolutionService{Pipeline: resolver.ResolutionPipeline{}, Repository: failingResolverRepository{}}
 	_, err := service.Resolve(context.Background(), ResolutionRequest{
-		TenantID: "tn_zuribeans",
-		Context:  resolver.Context{TenantID: "tn_zuribeans"},
-		Mappings: []domain.Mapping{{ID: "request-supplied-state"}},
+		TenantID:          "tn_zuribeans",
+		CanonicalEntityID: "entity-1",
+		Context:           resolver.Context{TenantID: "tn_zuribeans"},
+		Mappings:          []domain.Mapping{{ID: "request-supplied-state"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "load mappings: transient database failure") {
 		t.Fatalf("expected wrapped authoritative repository failure, got %v", err)

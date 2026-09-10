@@ -10,7 +10,8 @@ import (
 func TestResolutionPipelineBuildsFinalDecision(t *testing.T) {
 	pipeline := ResolutionPipeline{}
 	result, err := pipeline.Resolve(context.Background(), ResolutionRequest{
-		TenantID: "tenant-123",
+		TenantID:          "tenant-123",
+		CanonicalEntityID: "entity-abc",
 		Context: Context{
 			TenantID:      "tenant-123",
 			LegalEntityID: "legal-456",
@@ -23,7 +24,7 @@ func TestResolutionPipelineBuildsFinalDecision(t *testing.T) {
 			ID:                      "mapping-tenant",
 			MappingType:             "IDENTITY",
 			TenantID:                "tenant-123",
-			CanonicalEntityID:       "tenant-123",
+			CanonicalEntityID:       "entity-abc",
 			TargetCanonicalEntityID: "entity-tenant",
 			ScopeID:                 "tenant-123",
 			Direction:               "BIDIRECTIONAL",
@@ -76,5 +77,55 @@ func TestResolutionPipelineRejectsMissingTenant(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected missing tenant context rejection")
+	}
+}
+
+// TestResolutionPipelineRejectsMissingCanonicalEntity is a regression test
+// for docs/governance/gate-iam-0-discovery.md R-3: ResolutionRequest used to
+// have no CanonicalEntityID field at all, and Resolve passed TenantID in its
+// place -- meaning a request with a tenant but nothing else always "worked"
+// by silently resolving the tenant as if it were the entity. Requiring
+// CanonicalEntityID explicitly closes that gap: a request naming a tenant
+// but no entity must fail, not quietly substitute one for the other.
+func TestResolutionPipelineRejectsMissingCanonicalEntity(t *testing.T) {
+	pipeline := ResolutionPipeline{}
+	_, err := pipeline.Resolve(context.Background(), ResolutionRequest{
+		TenantID: "tenant-123",
+		Context:  Context{TenantID: "tenant-123"},
+	})
+	if err == nil {
+		t.Fatal("expected missing canonical_entity_id rejection")
+	}
+}
+
+// TestResolutionPipelineRejectsCrossTenantMapping proves the fix for R-3
+// actually enforces tenant isolation, not just field naming: a candidate
+// mapping whose own TenantID differs from the requesting tenant must never
+// be selected, even if its CanonicalEntityID matches -- ADR-0005 §2 treats
+// this as exactly the boundary Tenant/CanonicalEntity separation exists to
+// protect.
+func TestResolutionPipelineRejectsCrossTenantMapping(t *testing.T) {
+	pipeline := ResolutionPipeline{}
+	_, err := pipeline.Resolve(context.Background(), ResolutionRequest{
+		TenantID:          "tenant-123",
+		CanonicalEntityID: "entity-abc",
+		Context:           Context{TenantID: "tenant-123"},
+		Candidates: []domain.Mapping{{
+			ID:                      "mapping-other-tenant",
+			MappingType:             "IDENTITY",
+			TenantID:                "tenant-other",
+			CanonicalEntityID:       "entity-abc",
+			TargetCanonicalEntityID: "entity-tenant",
+			ScopeID:                 "tenant-other",
+			Direction:               "BIDIRECTIONAL",
+			Cardinality:             "ONE_TO_ONE",
+			Authority:               "baobab",
+			Confidence:              "CONFIRMED",
+			Status:                  "ACTIVE",
+			EffectiveFrom:           "2025-01-01T00:00:00Z",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected cross-tenant mapping to be rejected")
 	}
 }
