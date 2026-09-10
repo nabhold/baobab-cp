@@ -190,6 +190,17 @@ func TestIdentityServiceResolvePropagatesUnexpectedResolveError(t *testing.T) {
 	}
 }
 
+func TestWorkloadOnlyProvisioningPolicy(t *testing.T) {
+	if !WorkloadOnlyProvisioningPolicy("workload") {
+		t.Fatal("expected workload actor type to be allowed")
+	}
+	for _, actorType := range []string{"human", "external", "", "not-a-real-actor-type"} {
+		if WorkloadOnlyProvisioningPolicy(actorType) {
+			t.Fatalf("expected actor type %q to be denied", actorType)
+		}
+	}
+}
+
 func TestIdentityServiceResolvePropagatesUnexpectedLinkError(t *testing.T) {
 	boom := errors.New("boom")
 	repo := &fakeIdentityRepository{
