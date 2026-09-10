@@ -88,3 +88,49 @@ func (e ExternalIdentity) Validate() error {
 // the same bare-UUID convention as NewPrincipalID (identity/v1's own
 // convention, not this package's opaque-prefixed control-plane/v1 tokens).
 func NewExternalIdentityID() string { return NewUUIDv7() }
+
+// IdentityReference maps a Principal to an engine-native actor -- ADR-0004
+// §23-27: Medusa customer, iDempiere AD_User, Payload user, etc. "SHALL be
+// represented as mappings rather than canonical identities" (§23). Matches
+// contracts/identity/v1/external-reference.schema.json field-for-field.
+//
+// Deliberately not this package's own ExternalReference (resolution.go),
+// which is keyed to CanonicalEntityID -- a Mapping-domain business-entity
+// concept (see canonical.go), not an actor. Gate IAM-3's scope doc
+// (Decision 2) records why identity mappings live in a new, parallel
+// identity.identity_reference table instead.
+type IdentityReference struct {
+	ID               string    `json:"id,omitempty"`
+	PrincipalID      string    `json:"principal_id"`
+	Engine           string    `json:"engine"`
+	EngineInstanceID string    `json:"engine_instance_id,omitempty"`
+	ExternalType     string    `json:"external_type"`
+	ExternalID       string    `json:"external_id"`
+	Status           string    `json:"status"`
+	CreatedAt        time.Time `json:"created_at,omitempty"`
+}
+
+// validIdentityReferenceEngines matches external-reference.schema.json's
+// own "engine" enum exactly.
+var validIdentityReferenceEngines = map[string]bool{"baobab-trade": true, "baobab-erp": true, "baobab-cms": true, "baobab-pulse": true}
+var validIdentityReferenceStatuses = map[string]bool{"ACTIVE": true, "INACTIVE": true, "HISTORICAL": true}
+
+func (r IdentityReference) Validate() error {
+	if r.PrincipalID == "" {
+		return errors.New("principal_id is required")
+	}
+	if !validIdentityReferenceEngines[r.Engine] {
+		return errors.New("engine must be baobab-trade, baobab-erp, baobab-cms or baobab-pulse")
+	}
+	if r.ExternalType == "" || r.ExternalID == "" {
+		return errors.New("external_type and external_id are required")
+	}
+	if !validIdentityReferenceStatuses[r.Status] {
+		return errors.New("status must be ACTIVE, INACTIVE or HISTORICAL")
+	}
+	return nil
+}
+
+// NewIdentityReferenceID mints a new identity-reference identifier,
+// following the same bare-UUID convention as NewPrincipalID.
+func NewIdentityReferenceID() string { return NewUUIDv7() }

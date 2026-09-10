@@ -73,14 +73,38 @@ type IdentityRepository interface {
 	LinkExternalIdentity(ctx context.Context, external domain.ExternalIdentity) error
 }
 
+// ErrIdentityReferenceNotFound is returned by ResolveIdentityReference when
+// no mapping exists for the given engine-native actor -- the "absent"
+// branch of ADR-0004 §23-27's engine-reference resolution, mirroring
+// ErrIdentityNotFound's role for issuer/subject resolution.
+var ErrIdentityReferenceNotFound = errors.New("identity reference not found")
+
+// ErrIdentityReferenceAlreadyMapped is returned when CreateIdentityReference
+// is rejected by identity.identity_reference's UNIQUE(engine, external_type,
+// external_id) constraint (migration 000027) -- ADR-0004 §29's collision
+// -avoidance invariant: a given engine-native actor resolves to at most one
+// Principal.
+var ErrIdentityReferenceAlreadyMapped = errors.New("engine-native actor is already mapped to a principal")
+
+// IdentityReferenceRepository is the Gate IAM-3 phase 5 contract
+// (docs/governance/gate-iam-3-canonical-identity-scope.md) for ADR-0004
+// §23-30's engine-reference mapping: a Principal to an engine-native actor
+// (Medusa customer, iDempiere AD_User, Payload user, ...) and back.
+type IdentityReferenceRepository interface {
+	CreateIdentityReference(ctx context.Context, reference domain.IdentityReference) error
+	ListIdentityReferences(ctx context.Context, principalID string) ([]domain.IdentityReference, error)
+	ResolveIdentityReference(ctx context.Context, engine, externalType, externalID string) (domain.IdentityReference, error)
+}
+
 // Repository is a lightweight in-memory repository backing the resolver/service layer.
 type Repository struct {
 	Mappings           map[string][]domain.Mapping
 	Bindings           map[string][]resolver.CapabilityBinding
 	EngineInstances    map[string][]resolver.EngineInstance
-	MappingScopes      map[string]domain.MappingScope     // keyed by ScopeID
-	Principals         map[string]domain.Principal        // keyed by ID
-	ExternalIdentities map[string]domain.ExternalIdentity // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
+	MappingScopes      map[string]domain.MappingScope      // keyed by ScopeID
+	Principals         map[string]domain.Principal         // keyed by ID
+	ExternalIdentities map[string]domain.ExternalIdentity  // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
+	IdentityReferences map[string]domain.IdentityReference // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
 }
 
 var _ MappingRepository = (*Repository)(nil)
@@ -90,6 +114,7 @@ var _ MappingWriter = (*Repository)(nil)
 var _ CapabilityWriter = (*Repository)(nil)
 var _ MappingScopeWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
+var _ IdentityReferenceRepository = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
@@ -99,6 +124,7 @@ func NewInMemoryRepository() *Repository {
 		MappingScopes:      map[string]domain.MappingScope{},
 		Principals:         map[string]domain.Principal{},
 		ExternalIdentities: map[string]domain.ExternalIdentity{},
+		IdentityReferences: map[string]domain.IdentityReference{},
 	}
 }
 
@@ -259,6 +285,55 @@ func (r *Repository) LinkExternalIdentity(_ context.Context, external domain.Ext
 	}
 	r.ExternalIdentities[key] = external
 	return nil
+}
+
+func identityReferenceKey(engine, externalType, externalID string) string {
+	return engine + "\x00" + externalType + "\x00" + externalID
+}
+
+func (r *Repository) CreateIdentityReference(_ context.Context, reference domain.IdentityReference) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := reference.Validate(); err != nil {
+		return fmt.Errorf("validate identity reference: %w", err)
+	}
+	if reference.ID == "" {
+		return errors.New("identity reference id is required")
+	}
+	if _, exists := r.Principals[reference.PrincipalID]; !exists {
+		return fmt.Errorf("principal %s does not exist", reference.PrincipalID)
+	}
+	key := identityReferenceKey(reference.Engine, reference.ExternalType, reference.ExternalID)
+	if _, exists := r.IdentityReferences[key]; exists {
+		return ErrIdentityReferenceAlreadyMapped
+	}
+	r.IdentityReferences[key] = reference
+	return nil
+}
+
+func (r *Repository) ListIdentityReferences(_ context.Context, principalID string) ([]domain.IdentityReference, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var out []domain.IdentityReference
+	for _, reference := range r.IdentityReferences {
+		if reference.PrincipalID == principalID {
+			out = append(out, reference)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repository) ResolveIdentityReference(_ context.Context, engine, externalType, externalID string) (domain.IdentityReference, error) {
+	if r == nil {
+		return domain.IdentityReference{}, errors.New("repository is nil")
+	}
+	reference, ok := r.IdentityReferences[identityReferenceKey(engine, externalType, externalID)]
+	if !ok {
+		return domain.IdentityReference{}, ErrIdentityReferenceNotFound
+	}
+	return reference, nil
 }
 
 func (r *Repository) ListBindings(_ context.Context, capabilityKey string) ([]resolver.CapabilityBinding, error) {

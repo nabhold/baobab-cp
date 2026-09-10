@@ -169,3 +169,28 @@ func TestExternalIdentityMatchesSharedSchema(t *testing.T) {
 	}
 	contracttest.ValidateJSON(t, schema, external)
 }
+
+// TestIdentityReferenceMatchesSharedSchema validates domain.IdentityReference
+// (Gate IAM-3 phase 5) against contracts/identity/v1/external-reference.
+// schema.json -- another shared contract (ADR-0004 §23-27's "engine-native
+// identity" concept) that already matched field-for-field before this
+// phase's Go type existed.
+func TestIdentityReferenceMatchesSharedSchema(t *testing.T) {
+	dir := contracttest.SharedDir(t)
+	schema := contracttest.CompileSchema(t, dir, "identity/v1/external-reference.schema.json")
+
+	reference := domain.IdentityReference{
+		ID:               domain.NewIdentityReferenceID(),
+		PrincipalID:      domain.NewPrincipalID(),
+		Engine:           "baobab-trade",
+		EngineInstanceID: "af-south-1-production",
+		ExternalType:     "customer",
+		ExternalID:       "C-100",
+		Status:           "ACTIVE",
+		CreatedAt:        time.Now().UTC(),
+	}
+	if err := reference.Validate(); err != nil {
+		t.Fatalf("identity reference should be valid: %v", err)
+	}
+	contracttest.ValidateJSON(t, schema, reference)
+}

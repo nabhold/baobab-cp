@@ -210,3 +210,75 @@ func TestInMemoryRepositoryResolvesAndProvisionsIdentity(t *testing.T) {
 		t.Fatal("expected linking to a nonexistent principal to be rejected")
 	}
 }
+
+// TestInMemoryRepositoryMapsAndResolvesIdentityReferences exercises Gate
+// IAM-3 phase 5's IdentityReferenceRepository against ADR-0004 §23-29: an
+// unknown engine-native actor returns ErrIdentityReferenceNotFound, mapping
+// one to a Principal makes it resolvable, a second Principal cannot claim
+// the same engine-native actor (§29's collision-avoidance invariant), and
+// ListIdentityReferences returns every mapping for a given Principal.
+func TestInMemoryRepositoryMapsAndResolvesIdentityReferences(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	if _, err := repo.ResolveIdentityReference(ctx, "baobab-trade", "customer", "C-100"); !errors.Is(err, ErrIdentityReferenceNotFound) {
+		t.Fatalf("expected ErrIdentityReferenceNotFound for an unmapped engine-native actor, got %v", err)
+	}
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+
+	tradeReference := domain.IdentityReference{
+		ID: domain.NewIdentityReferenceID(), PrincipalID: principal.ID,
+		Engine: "baobab-trade", ExternalType: "customer", ExternalID: "C-100", Status: "ACTIVE",
+	}
+	if err := repo.CreateIdentityReference(ctx, tradeReference); err != nil {
+		t.Fatalf("create identity reference failed: %v", err)
+	}
+
+	other := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, other); err != nil {
+		t.Fatalf("create second identity failed: %v", err)
+	}
+	conflicting := domain.IdentityReference{
+		ID: domain.NewIdentityReferenceID(), PrincipalID: other.ID,
+		Engine: "baobab-trade", ExternalType: "customer", ExternalID: "C-100", Status: "ACTIVE",
+	}
+	if err := repo.CreateIdentityReference(ctx, conflicting); !errors.Is(err, ErrIdentityReferenceAlreadyMapped) {
+		t.Fatalf("expected ErrIdentityReferenceAlreadyMapped for a duplicate engine-native actor, got %v", err)
+	}
+
+	resolved, err := repo.ResolveIdentityReference(ctx, "baobab-trade", "customer", "C-100")
+	if err != nil {
+		t.Fatalf("resolve identity reference failed: %v", err)
+	}
+	if resolved.PrincipalID != principal.ID {
+		t.Fatalf("expected reference to resolve to principal %s, got %s", principal.ID, resolved.PrincipalID)
+	}
+
+	// ADR-0004 §28: one Principal may have multiple engine mappings.
+	erpReference := domain.IdentityReference{
+		ID: domain.NewIdentityReferenceID(), PrincipalID: principal.ID,
+		Engine: "baobab-erp", ExternalType: "ad_user", ExternalID: "20013", Status: "ACTIVE",
+	}
+	if err := repo.CreateIdentityReference(ctx, erpReference); err != nil {
+		t.Fatalf("create second identity reference failed: %v", err)
+	}
+	references, err := repo.ListIdentityReferences(ctx, principal.ID)
+	if err != nil {
+		t.Fatalf("list identity references failed: %v", err)
+	}
+	if len(references) != 2 {
+		t.Fatalf("expected 2 identity references for principal %s, got %d", principal.ID, len(references))
+	}
+
+	orphan := domain.IdentityReference{
+		ID: domain.NewIdentityReferenceID(), PrincipalID: "does-not-exist",
+		Engine: "baobab-cms", ExternalType: "user", ExternalID: "P-77", Status: "ACTIVE",
+	}
+	if err := repo.CreateIdentityReference(ctx, orphan); err == nil {
+		t.Fatal("expected mapping a nonexistent principal to be rejected")
+	}
+}

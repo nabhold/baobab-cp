@@ -57,3 +57,44 @@ func TestExternalIdentityValidateRequiresPrincipalIssuerAndSubject(t *testing.T)
 		t.Fatalf("valid external identity rejected: %v", err)
 	}
 }
+
+func TestIdentityReferenceValidateRequiresPrincipalEngineAndExternalActor(t *testing.T) {
+	cases := []struct {
+		name string
+		r    IdentityReference
+	}{
+		{"missing principal_id", IdentityReference{Engine: "baobab-trade", ExternalType: "customer", ExternalID: "C-100", Status: "ACTIVE"}},
+		{"unknown engine", IdentityReference{PrincipalID: "p-1", Engine: "not-a-real-engine", ExternalType: "customer", ExternalID: "C-100", Status: "ACTIVE"}},
+		{"missing external_type", IdentityReference{PrincipalID: "p-1", Engine: "baobab-trade", ExternalID: "C-100", Status: "ACTIVE"}},
+		{"missing external_id", IdentityReference{PrincipalID: "p-1", Engine: "baobab-trade", ExternalType: "customer", Status: "ACTIVE"}},
+		{"invalid status", IdentityReference{PrincipalID: "p-1", Engine: "baobab-trade", ExternalType: "customer", ExternalID: "C-100", Status: "REVOKED"}},
+	}
+	for _, c := range cases {
+		if err := c.r.Validate(); err == nil {
+			t.Fatalf("%s: expected rejection", c.name)
+		}
+	}
+
+	for _, engine := range []string{"baobab-trade", "baobab-erp", "baobab-cms", "baobab-pulse"} {
+		valid := IdentityReference{PrincipalID: "p-1", Engine: engine, ExternalType: "customer", ExternalID: "C-100", Status: "ACTIVE"}
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("valid identity reference for engine %q rejected: %v", engine, err)
+		}
+	}
+	for _, status := range []string{"ACTIVE", "INACTIVE", "HISTORICAL"} {
+		valid := IdentityReference{PrincipalID: "p-1", Engine: "baobab-trade", ExternalType: "customer", ExternalID: "C-100", Status: status}
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("valid identity reference for status %q rejected: %v", status, err)
+		}
+	}
+}
+
+func TestNewIdentityReferenceIDIsUniqueAndUUIDShaped(t *testing.T) {
+	a, b := NewIdentityReferenceID(), NewIdentityReferenceID()
+	if a == b {
+		t.Fatal("expected distinct identity reference IDs")
+	}
+	if len(a) != 36 {
+		t.Fatalf("expected a UUID-shaped (36-char) identity reference ID, got %q", a)
+	}
+}
