@@ -46,6 +46,7 @@ var _ MappingScopeWriter = (*PostgresRepository)(nil)
 var _ IdentityRepository = (*PostgresRepository)(nil)
 var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
 var _ IdentityLinkingRepository = (*PostgresRepository)(nil)
+var _ IdentityUnlinkingRepository = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -379,11 +380,15 @@ func (r *PostgresRepository) ResolveIdentity(ctx context.Context, issuer, subjec
 	if r == nil || r.pool == nil {
 		return domain.Principal{}, errors.New("repository is not initialized")
 	}
+	// ADR-0004 §32: external identities may independently be UNLINKED,
+	// DISABLED or REVOKED -- such a row must not resolve, otherwise
+	// UnlinkExternalIdentityAudited (Gate IAM-3 phase 6) would leave a
+	// still-usable authentication path behind it.
 	row := r.pool.QueryRow(ctx, `
 		SELECT p.principal_id::text, p.actor_type, p.status, p.created_at, p.updated_at
 		FROM identity.principal p
 		JOIN identity.external_identity e ON e.principal_id = p.principal_id
-		WHERE e.issuer = $1 AND e.subject = $2`, issuer, subject)
+		WHERE e.issuer = $1 AND e.subject = $2 AND e.status = 'ACTIVE'`, issuer, subject)
 	var principal domain.Principal
 	err := row.Scan(&principal.ID, &principal.ActorType, &principal.Status, &principal.CreatedAt, &principal.UpdatedAt)
 	if err != nil {
@@ -493,6 +498,81 @@ func (r *PostgresRepository) LinkExternalIdentityAudited(ctx context.Context, ex
 		actor.ActorID, actor.ActorType, actor.ClientID, actor.TokenID, actor.CorrelationID,
 		"identity.external_identity.linked", "principal:"+external.PrincipalID, "success", reason, payload); err != nil {
 		return fmt.Errorf("write link audit record: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// UnlinkExternalIdentityAudited implements IdentityUnlinkingRepository
+// (ADR-0004 §18). Unless administrative is true, it locks (SELECT ... FOR
+// UPDATE) and counts the Principal's currently-ACTIVE ExternalIdentity rows
+// within the same transaction before deciding, closing the race a plain
+// COUNT(*) would leave between "how many active credentials remain" and
+// the UPDATE that removes one -- ADR-0004 §17 calls this whole area "an
+// account-takeover boundary", so this guard is worth the extra row lock.
+// (Postgres rejects FOR UPDATE combined with an aggregate directly, hence
+// counting the locked rows in Go rather than via SELECT count(*) ... FOR
+// UPDATE.)
+func (r *PostgresRepository) UnlinkExternalIdentityAudited(ctx context.Context, principalID, issuer, subject string, administrative bool, actor AuditActor, reason string) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if !administrative {
+		rows, err := tx.Query(ctx, `
+			SELECT external_identity_id FROM identity.external_identity
+			WHERE principal_id = $1::uuid AND status = 'ACTIVE'
+			FOR UPDATE`, principalID)
+		if err != nil {
+			return fmt.Errorf("lock active external identities: %w", err)
+		}
+		activeCount := 0
+		for rows.Next() {
+			activeCount++
+		}
+		rowsErr := rows.Err()
+		rows.Close()
+		if rowsErr != nil {
+			return fmt.Errorf("lock active external identities: %w", rowsErr)
+		}
+		// activeCount includes the row about to be unlinked, so <=1 means
+		// this unlink would leave zero remaining.
+		if activeCount <= 1 {
+			return ErrLastCredentialDenied
+		}
+	}
+
+	result, err := tx.Exec(ctx, `
+		UPDATE identity.external_identity
+		SET status = 'UNLINKED'
+		WHERE principal_id = $1::uuid AND issuer = $2 AND subject = $3 AND status = 'ACTIVE'`,
+		principalID, issuer, subject)
+	if err != nil {
+		return fmt.Errorf("unlink external identity: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return ErrExternalIdentityNotLinked
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"issuer":         issuer,
+		"subject":        subject,
+		"administrative": administrative,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal unlink audit payload: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO audit_events(actor_id, actor_type, client_id, token_id, correlation_id, action, target, result, policy_decision, payload)
+		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::uuid, $6, $7, $8, $9, $10)`,
+		actor.ActorID, actor.ActorType, actor.ClientID, actor.TokenID, actor.CorrelationID,
+		"identity.external_identity.unlinked", "principal:"+principalID, "success", reason, payload); err != nil {
+		return fmt.Errorf("write unlink audit record: %w", err)
 	}
 
 	return tx.Commit(ctx)
