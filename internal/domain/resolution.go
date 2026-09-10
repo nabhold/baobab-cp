@@ -141,12 +141,14 @@ func (b CapabilityBinding) Validate() error {
 // MappingScope's fields mirror nabhold/shared's contracts/control-plane/v1/
 // canonical-mapping.schema.json #/$defs/mappingScope field-for-field (names,
 // required-ness) per docs/reconciliation/platform-resolution-spine-audit.md
-// Gate 1; see internal/domain/contract_compatibility_test.go. Nothing in
-// this repository currently loads a MappingScope from Postgres (see
-// internal/repository/postgres.go's ListMappings: the only mapping.
-// mapping_scope column read is mapping_scope_id, joined in purely to supply
-// Mapping.ScopeID) -- this type is constructed in-memory/by tests only, so
-// this reconciliation needed no accompanying migration.
+// Gate 1; see internal/domain/contract_compatibility_test.go. Gate 2
+// completed mapping.mapping_scope's schema and added real Postgres-backed
+// persistence (internal/repository/postgres.go's CreateMappingScope/
+// GetMappingScope/ListMappingScopes) -- MarketID, DigitalPropertyID,
+// EngineID and EngineInstanceID still read back as this database's own
+// uuid identifiers rather than the wire schema's slug pattern; see
+// migration 000025_mapping_scope_dimensions.sql for why that particular
+// gap is left open rather than converted unilaterally.
 type MappingScope struct {
 	ScopeID            string   `json:"scope_id,omitempty"`
 	TenantID           string   `json:"tenant_id,omitempty"`
@@ -172,6 +174,16 @@ type MappingScope struct {
 	ExcludeCountries   []string `json:"exclude_countries,omitempty"`
 	CreatedAt          string   `json:"created_at,omitempty"`
 	UpdatedAt          string   `json:"updated_at,omitempty"`
+}
+
+func (s MappingScope) Validate() error {
+	if strings.TrimSpace(s.ScopeID) == "" {
+		return errors.New("scope_id is required")
+	}
+	if strings.TrimSpace(s.TenantID) == "" {
+		return errors.New("tenant_id is required")
+	}
+	return nil
 }
 
 type ExternalReference struct {

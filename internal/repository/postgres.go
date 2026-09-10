@@ -245,6 +245,116 @@ func (r *PostgresRepository) SaveMapping(ctx context.Context, mapping domain.Map
 	return nil
 }
 
+// CreateMappingScope, GetMappingScope and ListMappingScopes are Gate 2's
+// (docs/reconciliation/platform-resolution-spine-audit.md) first real
+// Postgres-backed persistence for domain.MappingScope -- Gate 1 (#61) gave
+// it Go fields matching nabhold/shared's wire schema, but nothing loaded or
+// saved one against mapping.mapping_scope until migration
+// 000025_mapping_scope_dimensions.sql completed that table's columns.
+//
+// market_id, digital_estate_id, digital_property_id, engine_id and
+// engine_instance_id remain this database's own uuid identifiers here
+// (cast to text), not the wire schema's slug pattern -- see 000025's
+// comment for why that conversion isn't made unilaterally in this pass.
+func (r *PostgresRepository) CreateMappingScope(ctx context.Context, scope domain.MappingScope) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := scope.Validate(); err != nil {
+		return fmt.Errorf("validate mapping scope: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO mapping.mapping_scope(
+			mapping_scope_id, tenant_id, market_id, legal_entity_id,
+			organisation_id, business_unit_id, operating_region_id, geographic_region_id,
+			country_code, digital_estate_id, digital_property_id, channel_id,
+			currency_code, locale, catalogue_id, customer_segment_id,
+			engine_id, engine_instance_id, environment, deployment_region,
+			include_countries, exclude_countries
+		)
+		VALUES (
+			$1::uuid, $2, NULLIF($3, '')::uuid, NULLIF($4, ''),
+			NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''),
+			NULLIF($9, ''), NULLIF($10, '')::uuid, NULLIF($11, '')::uuid, NULLIF($12, ''),
+			NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
+			NULLIF($17, '')::uuid, NULLIF($18, '')::uuid, NULLIF($19, ''), NULLIF($20, ''),
+			$21, $22
+		)`,
+		scope.ScopeID, scope.TenantID, scope.MarketID, scope.LegalEntityID,
+		scope.OrganisationID, scope.BusinessUnitID, scope.OperatingRegionID, scope.GeographicRegionID,
+		scope.Country, scope.EstateID, scope.DigitalPropertyID, scope.ChannelID,
+		scope.Currency, scope.Locale, scope.CatalogueID, scope.CustomerSegmentID,
+		scope.EngineID, scope.EngineInstanceID, scope.Environment, scope.DeploymentRegion,
+		scope.IncludeCountries, scope.ExcludeCountries,
+	)
+	return err
+}
+
+const mappingScopeSelectColumns = `
+	mapping_scope_id::text, tenant_id, COALESCE(market_id::text, ''), COALESCE(legal_entity_id, ''),
+	COALESCE(organisation_id, ''), COALESCE(business_unit_id, ''), COALESCE(operating_region_id, ''), COALESCE(geographic_region_id, ''),
+	COALESCE(country_code, ''), COALESCE(digital_estate_id::text, ''), COALESCE(digital_property_id::text, ''), COALESCE(channel_id, ''),
+	COALESCE(currency_code, ''), COALESCE(locale, ''), COALESCE(catalogue_id, ''), COALESCE(customer_segment_id, ''),
+	COALESCE(engine_id::text, ''), COALESCE(engine_instance_id::text, ''), COALESCE(environment, ''), COALESCE(deployment_region, ''),
+	include_countries, exclude_countries, created_at, updated_at`
+
+func scanMappingScope(row interface {
+	Scan(dest ...any) error
+}) (domain.MappingScope, error) {
+	var s domain.MappingScope
+	var createdAt, updatedAt time.Time
+	err := row.Scan(
+		&s.ScopeID, &s.TenantID, &s.MarketID, &s.LegalEntityID,
+		&s.OrganisationID, &s.BusinessUnitID, &s.OperatingRegionID, &s.GeographicRegionID,
+		&s.Country, &s.EstateID, &s.DigitalPropertyID, &s.ChannelID,
+		&s.Currency, &s.Locale, &s.CatalogueID, &s.CustomerSegmentID,
+		&s.EngineID, &s.EngineInstanceID, &s.Environment, &s.DeploymentRegion,
+		&s.IncludeCountries, &s.ExcludeCountries, &createdAt, &updatedAt,
+	)
+	if err != nil {
+		return domain.MappingScope{}, err
+	}
+	s.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	s.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	return s, nil
+}
+
+func (r *PostgresRepository) GetMappingScope(ctx context.Context, scopeID string) (domain.MappingScope, error) {
+	if r == nil || r.pool == nil {
+		return domain.MappingScope{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `SELECT `+mappingScopeSelectColumns+` FROM mapping.mapping_scope WHERE mapping_scope_id=$1::uuid`, scopeID)
+	scope, err := scanMappingScope(row)
+	if err != nil {
+		return domain.MappingScope{}, fmt.Errorf("get mapping scope %s: %w", scopeID, err)
+	}
+	return scope, nil
+}
+
+func (r *PostgresRepository) ListMappingScopes(ctx context.Context, tenantID string) ([]domain.MappingScope, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+mappingScopeSelectColumns+` FROM mapping.mapping_scope WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.MappingScope
+	for rows.Next() {
+		scope, err := scanMappingScope(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, scope)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (r *PostgresRepository) ListBindings(ctx context.Context, capabilityKey string) ([]resolver.CapabilityBinding, error) {
 	if r == nil || r.pool == nil {
 		return nil, errors.New("repository is not initialized")
