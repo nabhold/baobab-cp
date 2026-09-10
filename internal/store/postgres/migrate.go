@@ -61,6 +61,7 @@ var canonicalMigrationNames = []string{
 	"000024_resolution_spine_invariants.sql",
 	"000025_mapping_scope_dimensions.sql",
 	"000026_canonical_identity.sql",
+	"000027_identity_references.sql",
 }
 
 func LoadMigrations() ([]Migration, error) {

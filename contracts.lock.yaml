@@ -27,6 +27,7 @@ contracts:
   - contracts/idempotency/v1/policy.yaml
   - contracts/identity/v1/principal.schema.json
   - contracts/identity/v1/external-identity.schema.json
+  - contracts/identity/v1/external-reference.schema.json
 policy:
   updates: explicit_pull_request
   compatibility: validate_before_merge

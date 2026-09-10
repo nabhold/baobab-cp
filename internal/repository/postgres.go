@@ -43,6 +43,7 @@ var _ CapabilityWriter = (*PostgresRepository)(nil)
 var _ CanonicalEntityRepository = (*PostgresRepository)(nil)
 var _ MappingScopeWriter = (*PostgresRepository)(nil)
 var _ IdentityRepository = (*PostgresRepository)(nil)
+var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -425,6 +426,73 @@ func (r *PostgresRepository) LinkExternalIdentity(ctx context.Context, external 
 		return err
 	}
 	return nil
+}
+
+func (r *PostgresRepository) CreateIdentityReference(ctx context.Context, reference domain.IdentityReference) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := reference.Validate(); err != nil {
+		return fmt.Errorf("validate identity reference: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO identity.identity_reference(identity_reference_id, principal_id, engine, engine_instance_id, external_type, external_id, status)
+		VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, ''), $5, $6, $7)`,
+		reference.ID, reference.PrincipalID, reference.Engine, reference.EngineInstanceID, reference.ExternalType, reference.ExternalID, reference.Status)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrIdentityReferenceAlreadyMapped
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *PostgresRepository) ListIdentityReferences(ctx context.Context, principalID string) ([]domain.IdentityReference, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT identity_reference_id::text, principal_id::text, engine, COALESCE(engine_instance_id, ''), external_type, external_id, status, created_at
+		FROM identity.identity_reference
+		WHERE principal_id = $1::uuid`, principalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.IdentityReference
+	for rows.Next() {
+		var reference domain.IdentityReference
+		if err := rows.Scan(&reference.ID, &reference.PrincipalID, &reference.Engine, &reference.EngineInstanceID, &reference.ExternalType, &reference.ExternalID, &reference.Status, &reference.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, reference)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *PostgresRepository) ResolveIdentityReference(ctx context.Context, engine, externalType, externalID string) (domain.IdentityReference, error) {
+	if r == nil || r.pool == nil {
+		return domain.IdentityReference{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT identity_reference_id::text, principal_id::text, engine, COALESCE(engine_instance_id, ''), external_type, external_id, status, created_at
+		FROM identity.identity_reference
+		WHERE engine = $1 AND external_type = $2 AND external_id = $3`, engine, externalType, externalID)
+	var reference domain.IdentityReference
+	err := row.Scan(&reference.ID, &reference.PrincipalID, &reference.Engine, &reference.EngineInstanceID, &reference.ExternalType, &reference.ExternalID, &reference.Status, &reference.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.IdentityReference{}, ErrIdentityReferenceNotFound
+		}
+		return domain.IdentityReference{}, fmt.Errorf("resolve identity reference: %w", err)
+	}
+	return reference, nil
 }
 
 func (r *PostgresRepository) ListBindings(ctx context.Context, capabilityKey string) ([]resolver.CapabilityBinding, error) {
