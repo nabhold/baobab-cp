@@ -15,7 +15,8 @@ type ResolverHandler struct {
 }
 
 type resolverRequest struct {
-	TenantID string `json:"tenant_id"`
+	TenantID          string `json:"tenant_id"`
+	CanonicalEntityID string `json:"canonical_entity_id"`
 }
 
 func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +42,15 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "requested tenant does not match verified workload identity", false)
 		return
 	}
+	// contracts/control-plane/v1/canonical-mapping.schema.json's
+	// resolutionRequest already requires canonical_entity_id -- this
+	// repository just never accepted it (docs/governance/gate-iam-0-
+	// discovery.md R-3), so nothing downstream could resolve an actual
+	// entity, only the tenant itself.
+	if req.CanonicalEntityID == "" {
+		problem(w, r, http.StatusBadRequest, "INVALID_REQUEST", "canonical_entity_id is required", false)
+		return
+	}
 	operationCtx, trustedContext, err := auth.NewOperationContext(r.Context(), principal, correlationID(r), time.Now())
 	if err != nil {
 		problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
@@ -49,8 +59,9 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(operationCtx)
 
 	result, err := h.Service.Resolve(operationCtx, service.ResolutionRequest{
-		TenantID: trustedContext.TenantID,
-		Context:  trustedContext,
+		TenantID:          trustedContext.TenantID,
+		CanonicalEntityID: req.CanonicalEntityID,
+		Context:           trustedContext,
 	})
 	if err != nil {
 		// ADR-0008 §45 ("Denial Model"): reason codes SHALL not expose

@@ -11,12 +11,18 @@ import (
 )
 
 // ResolutionRequest is the service-level input for a control-plane resolution request.
+//
+// TenantID and CanonicalEntityID stay distinct end to end (ADR-0005 §2) --
+// see resolver.ResolutionRequest's doc comment for why conflating them
+// (docs/governance/gate-iam-0-discovery.md R-3) was a real bug, not a
+// naming choice.
 type ResolutionRequest struct {
-	TenantID        string
-	Context         resolver.Context
-	Mappings        []domain.Mapping
-	Bindings        []resolver.CapabilityBinding
-	EngineInstances []resolver.EngineInstance
+	TenantID          string
+	CanonicalEntityID string
+	Context           resolver.Context
+	Mappings          []domain.Mapping
+	Bindings          []resolver.CapabilityBinding
+	EngineInstances   []resolver.EngineInstance
 }
 
 // ResolutionResult contains the fully resolved runtime decision for a tenant request.
@@ -45,8 +51,11 @@ func (s ResolutionService) Resolve(ctx context.Context, req ResolutionRequest) (
 	if req.Context.TenantID == "" {
 		req.Context.TenantID = req.TenantID
 	}
+	if req.CanonicalEntityID == "" {
+		return ResolutionResult{}, errors.New("canonical_entity_id is required")
+	}
 	if s.Repository != nil {
-		mappings, err := s.Repository.ListMappings(ctx, req.Context.TenantID)
+		mappings, err := s.Repository.ListMappings(ctx, req.CanonicalEntityID)
 		if err != nil {
 			return ResolutionResult{}, fmt.Errorf("load mappings: %w", err)
 		}
@@ -65,11 +74,12 @@ func (s ResolutionService) Resolve(ctx context.Context, req ResolutionRequest) (
 	}
 
 	pipelineResult, err := s.Pipeline.Resolve(ctx, resolver.ResolutionRequest{
-		TenantID:        req.TenantID,
-		Context:         req.Context,
-		Candidates:      req.Mappings,
-		Bindings:        req.Bindings,
-		EngineInstances: req.EngineInstances,
+		TenantID:          req.TenantID,
+		CanonicalEntityID: req.CanonicalEntityID,
+		Context:           req.Context,
+		Candidates:        req.Mappings,
+		Bindings:          req.Bindings,
+		EngineInstances:   req.EngineInstances,
 	})
 	if err != nil {
 		return ResolutionResult{}, fmt.Errorf("resolution failed: %w", err)

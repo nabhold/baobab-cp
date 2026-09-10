@@ -59,11 +59,12 @@ func TestResolutionHasNoCorrectnessDependencyOnCache(t *testing.T) {
 func resilientResolutionRequest() ResolutionRequest {
 	now := time.Date(2026, time.June, 1, 0, 0, 0, 0, time.UTC)
 	return ResolutionRequest{
-		TenantID: "tn_zuribeans",
-		Context:  Context{TenantID: "tn_zuribeans", CountryCode: "ZA", ResolvedAt: now},
+		TenantID:          "tn_zuribeans",
+		CanonicalEntityID: "entity-1",
+		Context:           Context{TenantID: "tn_zuribeans", CountryCode: "ZA", ResolvedAt: now},
 		Candidates: []domain.Mapping{{
-			ID: "mapping-1", MappingType: "IDENTITY", TenantID: "tn_zuribeans", CanonicalEntityID: "tn_zuribeans",
-			TargetCanonicalEntityID: "entity-1", ScopeID: "tn_zuribeans", Direction: "BIDIRECTIONAL",
+			ID: "mapping-1", MappingType: "IDENTITY", TenantID: "tn_zuribeans", CanonicalEntityID: "entity-1",
+			TargetCanonicalEntityID: "external-entity-1", ScopeID: "tn_zuribeans", Direction: "BIDIRECTIONAL",
 			Cardinality: "ONE_TO_ONE", Authority: "baobab", Confidence: "CONFIRMED", Status: "ACTIVE",
 			EffectiveFrom: "2025-01-01T00:00:00Z",
 		}},

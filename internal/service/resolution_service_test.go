@@ -12,7 +12,8 @@ import (
 func TestResolutionServiceResolve(t *testing.T) {
 	service := ResolutionService{Pipeline: resolver.ResolutionPipeline{}}
 	result, err := service.Resolve(context.Background(), ResolutionRequest{
-		TenantID: "tenant-123",
+		TenantID:          "tenant-123",
+		CanonicalEntityID: "entity-abc",
 		Context: resolver.Context{
 			TenantID:      "tenant-123",
 			LegalEntityID: "legal-456",
@@ -25,7 +26,7 @@ func TestResolutionServiceResolve(t *testing.T) {
 			ID:                      "mapping-tenant",
 			MappingType:             "IDENTITY",
 			TenantID:                "tenant-123",
-			CanonicalEntityID:       "tenant-123",
+			CanonicalEntityID:       "entity-abc",
 			TargetCanonicalEntityID: "entity-tenant",
 			ScopeID:                 "tenant-123",
 			Direction:               "BIDIRECTIONAL",
@@ -77,8 +78,8 @@ func TestResolutionServiceRequiresTenant(t *testing.T) {
 
 func TestResolutionServiceUsesRepositoryState(t *testing.T) {
 	repo := repository.NewInMemoryRepository()
-	repo.Mappings["tenant-123"] = []domain.Mapping{{
-		ID: "authoritative", MappingType: "IDENTITY", TenantID: "tenant-123", CanonicalEntityID: "tenant-123",
+	repo.Mappings["entity-abc"] = []domain.Mapping{{
+		ID: "authoritative", MappingType: "IDENTITY", TenantID: "tenant-123", CanonicalEntityID: "entity-abc",
 		TargetCanonicalEntityID: "entity-1", ScopeID: "tenant-123", Direction: "BIDIRECTIONAL", Cardinality: "ONE_TO_ONE",
 		Authority: "baobab", Confidence: "CONFIRMED", Status: "ACTIVE", EffectiveFrom: "2025-01-01T00:00:00Z",
 	}}
@@ -86,13 +87,14 @@ func TestResolutionServiceUsesRepositoryState(t *testing.T) {
 	repo.EngineInstances["engine-1"] = []resolver.EngineInstance{{ID: "instance-1", EngineID: "engine-1", Environment: "production", Status: "ACTIVE"}}
 	service := ResolutionService{Pipeline: resolver.ResolutionPipeline{}, Repository: repo}
 	result, err := service.Resolve(context.Background(), ResolutionRequest{
-		TenantID: "tenant-123",
+		TenantID:          "tenant-123",
+		CanonicalEntityID: "entity-abc",
 		Context: resolver.Context{
 			TenantID:    "tenant-123",
 			MarketID:    "market-1",
 			CountryCode: "ZA",
 		},
-		Mappings: []domain.Mapping{{ID: "untrusted", CanonicalEntityID: "tenant-123", Status: "ACTIVE"}},
+		Mappings: []domain.Mapping{{ID: "untrusted", CanonicalEntityID: "entity-abc", Status: "ACTIVE"}},
 	})
 	if err != nil {
 		t.Fatalf("repository-backed resolve failed: %v", err)
