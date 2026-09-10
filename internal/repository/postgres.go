@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -44,6 +45,7 @@ var _ CanonicalEntityRepository = (*PostgresRepository)(nil)
 var _ MappingScopeWriter = (*PostgresRepository)(nil)
 var _ IdentityRepository = (*PostgresRepository)(nil)
 var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
+var _ IdentityLinkingRepository = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -393,6 +395,25 @@ func (r *PostgresRepository) ResolveIdentity(ctx context.Context, issuer, subjec
 	return principal, nil
 }
 
+func (r *PostgresRepository) GetPrincipal(ctx context.Context, principalID string) (domain.Principal, error) {
+	if r == nil || r.pool == nil {
+		return domain.Principal{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT principal_id::text, actor_type, status, created_at, updated_at
+		FROM identity.principal
+		WHERE principal_id = $1::uuid`, principalID)
+	var principal domain.Principal
+	err := row.Scan(&principal.ID, &principal.ActorType, &principal.Status, &principal.CreatedAt, &principal.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Principal{}, ErrIdentityNotFound
+		}
+		return domain.Principal{}, fmt.Errorf("get principal: %w", err)
+	}
+	return principal, nil
+}
+
 func (r *PostgresRepository) CreateIdentity(ctx context.Context, principal domain.Principal) error {
 	if r == nil || r.pool == nil {
 		return errors.New("repository is not initialized")
@@ -426,6 +447,55 @@ func (r *PostgresRepository) LinkExternalIdentity(ctx context.Context, external 
 		return err
 	}
 	return nil
+}
+
+// LinkExternalIdentityAudited implements IdentityLinkingRepository: it
+// links a second ExternalIdentity to an already-existing Principal and
+// writes an audit_events row in the same transaction (ADR-0004 §16), so a
+// link can never be recorded without being audited or vice versa.
+func (r *PostgresRepository) LinkExternalIdentityAudited(ctx context.Context, external domain.ExternalIdentity, actor AuditActor, reason string) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := external.Validate(); err != nil {
+		return fmt.Errorf("validate external identity: %w", err)
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO identity.external_identity(external_identity_id, principal_id, issuer, subject, provider_type, status)
+		VALUES ($1::uuid, $2::uuid, $3, $4, NULLIF($5, ''), $6)`,
+		external.ID, external.PrincipalID, external.Issuer, external.Subject, external.ProviderType, external.Status)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrExternalIdentityAlreadyLinked
+		}
+		return err
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"external_identity_id": external.ID,
+		"issuer":               external.Issuer,
+		"subject":              external.Subject,
+		"provider_type":        external.ProviderType,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal link audit payload: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO audit_events(actor_id, actor_type, client_id, token_id, correlation_id, action, target, result, policy_decision, payload)
+		VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6, $7, $8, $9, $10)`,
+		actor.ActorID, actor.ActorType, actor.ClientID, actor.TokenID, actor.CorrelationID,
+		"identity.external_identity.linked", "principal:"+external.PrincipalID, "success", reason, payload); err != nil {
+		return fmt.Errorf("write link audit record: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (r *PostgresRepository) CreateIdentityReference(ctx context.Context, reference domain.IdentityReference) error {

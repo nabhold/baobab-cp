@@ -282,3 +282,64 @@ func TestInMemoryRepositoryMapsAndResolvesIdentityReferences(t *testing.T) {
 		t.Fatal("expected mapping a nonexistent principal to be rejected")
 	}
 }
+
+// TestInMemoryRepositoryGetPrincipal exercises Gate IAM-3 phase 6's
+// principal-by-ID lookup, which ADR-0004 §15-22's linking/unlinking/merging
+// flows all depend on (unlike ResolveIdentity's (issuer, subject) lookup).
+func TestInMemoryRepositoryGetPrincipal(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	if _, err := repo.GetPrincipal(ctx, "does-not-exist"); !errors.Is(err, ErrIdentityNotFound) {
+		t.Fatalf("expected ErrIdentityNotFound for an unknown principal id, got %v", err)
+	}
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+	fetched, err := repo.GetPrincipal(ctx, principal.ID)
+	if err != nil {
+		t.Fatalf("get principal failed: %v", err)
+	}
+	if fetched.ID != principal.ID || fetched.ActorType != "human" || fetched.Status != "ACTIVE" {
+		t.Fatalf("unexpected fetched principal: %+v", fetched)
+	}
+}
+
+// TestInMemoryRepositoryLinkExternalIdentityAudited exercises Gate IAM-3
+// phase 6's audited linking flow (ADR-0004 §16, "Every successful link
+// SHALL be auditable"): a successful link is recorded in LinkAudit
+// alongside the actual link, and a failed link (duplicate issuer/subject)
+// records neither.
+func TestInMemoryRepositoryLinkExternalIdentityAudited(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+
+	external := domain.ExternalIdentity{
+		ID: domain.NewExternalIdentityID(), PrincipalID: principal.ID,
+		Issuer: "https://accounts.google.com", Subject: "google-sub-1", ProviderType: "google", Status: "ACTIVE",
+	}
+	actor := AuditActor{ActorID: principal.ID, ActorType: "human", CorrelationID: "11111111-1111-4111-8111-111111111111"}
+	if err := repo.LinkExternalIdentityAudited(ctx, external, actor, "user requested additional login method"); err != nil {
+		t.Fatalf("link external identity audited failed: %v", err)
+	}
+	if len(repo.LinkAudit) != 1 {
+		t.Fatalf("expected 1 audit record, got %d", len(repo.LinkAudit))
+	}
+	if repo.LinkAudit[0].External.ID != external.ID || repo.LinkAudit[0].Actor.ActorID != principal.ID {
+		t.Fatalf("unexpected audit record: %+v", repo.LinkAudit[0])
+	}
+
+	if err := repo.LinkExternalIdentityAudited(ctx, external, actor, "duplicate attempt"); err == nil {
+		t.Fatal("expected duplicate (issuer, subject) to be rejected")
+	}
+	if len(repo.LinkAudit) != 1 {
+		t.Fatalf("expected no additional audit record on a failed link, got %d total", len(repo.LinkAudit))
+	}
+}

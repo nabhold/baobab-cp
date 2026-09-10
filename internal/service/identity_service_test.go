@@ -134,6 +134,10 @@ func (f *fakeIdentityRepository) ResolveIdentity(ctx context.Context, _, _ strin
 	return f.resolve(ctx, f.resolveCalls)
 }
 
+func (f *fakeIdentityRepository) GetPrincipal(context.Context, string) (domain.Principal, error) {
+	return domain.Principal{}, repository.ErrIdentityNotFound
+}
+
 func (f *fakeIdentityRepository) CreateIdentity(ctx context.Context, principal domain.Principal) error {
 	if f.create != nil {
 		return f.create(ctx, principal)
