@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
@@ -614,5 +615,76 @@ func TestInMemoryRepositoryCapabilityRegistry(t *testing.T) {
 	}
 	if len(deps) != 1 || deps[0].DependsOnCapability != "finance.invoice.issue" {
 		t.Fatalf("expected exactly one dependency, got %+v", deps)
+	}
+}
+
+func TestInMemoryRepositoryPersistsAndExpiresResolvedContexts(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	resolved := domain.Context{
+		ID:            "context-1",
+		PrincipalID:   "principal-abc",
+		TenantID:      "tenant-123",
+		CorrelationID: "correlation-123",
+		ResolvedAt:    now,
+		Provenance: map[string]domain.ContextSource{
+			"tenant_id": {Source: "verified_token", TrustLevel: domain.TrustVerified},
+		},
+	}
+	if err := repo.CreateContext(ctx, resolved); err != nil {
+		t.Fatalf("create context failed: %v", err)
+	}
+	if err := repo.CreateContext(ctx, resolved); err == nil {
+		t.Fatal("expected creating a duplicate context id to fail")
+	}
+
+	fetched, err := repo.GetContext(ctx, "context-1")
+	if err != nil {
+		t.Fatalf("get context failed: %v", err)
+	}
+	if fetched.TenantID != "tenant-123" || fetched.PrincipalID != "principal-abc" {
+		t.Fatalf("unexpected fetched context: %+v", fetched)
+	}
+
+	if _, err := repo.GetContext(ctx, "missing-context"); !errors.Is(err, ErrContextNotFound) {
+		t.Fatalf("expected ErrContextNotFound for a missing context, got %v", err)
+	}
+
+	expiresAt := now.Add(-time.Minute)
+	expired := domain.Context{
+		ID:            "context-2",
+		PrincipalID:   "principal-abc",
+		TenantID:      "tenant-123",
+		CorrelationID: "correlation-456",
+		ResolvedAt:    now.Add(-time.Hour),
+		ExpiresAt:     &expiresAt,
+		Provenance: map[string]domain.ContextSource{
+			"tenant_id": {Source: "verified_token", TrustLevel: domain.TrustVerified},
+		},
+	}
+	// Bypass CreateContext's own Validate() (which itself rejects an
+	// expires_at before resolved_at) to seed an already-expired row the way
+	// a row aging past its TTL would look, exercising GetContext's own
+	// expiry check independently of write-time validation.
+	repo.Contexts[expired.ID] = expired
+	if _, err := repo.GetContext(ctx, "context-2"); !errors.Is(err, ErrContextNotFound) {
+		t.Fatalf("expected an expired context to report ErrContextNotFound, got %v", err)
+	}
+
+	// DeleteContextsByTenant purges every row for the tenant, expired or
+	// not: a tenant.suspended event (ADR-BCP-004 §74) means "this tenant's
+	// cached contexts are no longer trustworthy," not "except the ones that
+	// already expired on their own."
+	removed, err := repo.DeleteContextsByTenant(ctx, "tenant-123")
+	if err != nil {
+		t.Fatalf("delete contexts by tenant failed: %v", err)
+	}
+	if removed != 2 {
+		t.Fatalf("expected both contexts for the tenant removed, got %d", removed)
+	}
+	if _, err := repo.GetContext(ctx, "context-1"); !errors.Is(err, ErrContextNotFound) {
+		t.Fatal("expected the deleted context to be gone")
 	}
 }

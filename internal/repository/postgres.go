@@ -1202,6 +1202,114 @@ func (r *PostgresRepository) CreateCapabilityDependency(ctx context.Context, dep
 	return err
 }
 
+// CreateContext persists a resolved Context (ADR-BCP-004 §70/§73,
+// context.resolved_context -- migration 000031). resolved.ID is expected to
+// already be a caller-minted UUIDv7 (domain.NewUUIDv7()), matching every
+// other first-class resource this repository creates -- there is no
+// RETURNING id here.
+func (r *PostgresRepository) CreateContext(ctx context.Context, resolved domain.Context) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := resolved.Validate(); err != nil {
+		return fmt.Errorf("validate context: %w", err)
+	}
+	if resolved.ID == "" {
+		return errors.New("context id is required")
+	}
+	provenance, err := json.Marshal(resolved.Provenance)
+	if err != nil {
+		return fmt.Errorf("marshal context provenance: %w", err)
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO context.resolved_context(
+			context_id, principal_id, tenant_id, legal_entity_id, organisation_id, business_unit_id,
+			digital_estate_id, digital_property_id, channel_id, market_id, jurisdiction,
+			country_code, currency_code, locale, deployment_region, environment, isolation_profile_id,
+			correlation_id, resolved_at, expires_at, provenance
+		)
+		VALUES (
+			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
+			NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''), NULLIF($11, ''),
+			NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''), NULLIF($17, ''),
+			$18, $19, $20, $21
+		)`,
+		resolved.ID, resolved.PrincipalID, resolved.TenantID, resolved.LegalEntityID, resolved.OrganisationID, resolved.BusinessUnitID,
+		resolved.DigitalEstateID, resolved.DigitalPropertyID, resolved.ChannelID, resolved.MarketID, resolved.Jurisdiction,
+		resolved.CountryCode, resolved.CurrencyCode, resolved.Locale, resolved.DeploymentRegion, resolved.Environment, resolved.IsolationProfileID,
+		resolved.CorrelationID, resolved.ResolvedAt, resolved.ExpiresAt, provenance,
+	)
+	return err
+}
+
+const resolvedContextSelectColumns = `
+	context_id::text, principal_id, tenant_id, COALESCE(legal_entity_id, ''), COALESCE(organisation_id, ''), COALESCE(business_unit_id, ''),
+	COALESCE(digital_estate_id, ''), COALESCE(digital_property_id, ''), COALESCE(channel_id, ''), COALESCE(market_id, ''), COALESCE(jurisdiction, ''),
+	COALESCE(country_code, ''), COALESCE(currency_code, ''), COALESCE(locale, ''), COALESCE(deployment_region, ''), COALESCE(environment, ''), COALESCE(isolation_profile_id, ''),
+	correlation_id, resolved_at, expires_at, provenance`
+
+func scanResolvedContext(row interface {
+	Scan(dest ...any) error
+}) (domain.Context, error) {
+	var c domain.Context
+	var provenance []byte
+	err := row.Scan(
+		&c.ID, &c.PrincipalID, &c.TenantID, &c.LegalEntityID, &c.OrganisationID, &c.BusinessUnitID,
+		&c.DigitalEstateID, &c.DigitalPropertyID, &c.ChannelID, &c.MarketID, &c.Jurisdiction,
+		&c.CountryCode, &c.CurrencyCode, &c.Locale, &c.DeploymentRegion, &c.Environment, &c.IsolationProfileID,
+		&c.CorrelationID, &c.ResolvedAt, &c.ExpiresAt, &provenance,
+	)
+	if err != nil {
+		return domain.Context{}, err
+	}
+	if len(provenance) > 0 {
+		if err := json.Unmarshal(provenance, &c.Provenance); err != nil {
+			return domain.Context{}, fmt.Errorf("unmarshal context provenance: %w", err)
+		}
+	}
+	c.ResolvedAt = c.ResolvedAt.UTC()
+	if c.ExpiresAt != nil {
+		expiresAt := c.ExpiresAt.UTC()
+		c.ExpiresAt = &expiresAt
+	}
+	return c, nil
+}
+
+// GetContext returns a resolved Context by id, treating an expired row
+// identically to a missing one (ErrContextNotFound in both cases):
+// ADR-BCP-004 §72 means the same next step -- re-resolve -- either way, so
+// callers have no reason to tell the two apart.
+func (r *PostgresRepository) GetContext(ctx context.Context, contextID string) (domain.Context, error) {
+	if r == nil || r.pool == nil {
+		return domain.Context{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `SELECT `+resolvedContextSelectColumns+`
+		FROM context.resolved_context
+		WHERE context_id = $1::uuid AND (expires_at IS NULL OR expires_at > now())`, contextID)
+	resolved, err := scanResolvedContext(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Context{}, ErrContextNotFound
+		}
+		return domain.Context{}, fmt.Errorf("get context %s: %w", contextID, err)
+	}
+	return resolved, nil
+}
+
+// DeleteContextsByTenant removes every resolved Context for tenantID
+// (ADR-BCP-004 §74, "Context Cache Invalidation") and returns the number of
+// rows removed.
+func (r *PostgresRepository) DeleteContextsByTenant(ctx context.Context, tenantID string) (int64, error) {
+	if r == nil || r.pool == nil {
+		return 0, errors.New("repository is not initialized")
+	}
+	result, err := r.pool.Exec(ctx, `DELETE FROM context.resolved_context WHERE tenant_id = $1`, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 func (r *PostgresRepository) Ping(ctx context.Context) error {
 	if r == nil || r.pool == nil {
 		return errors.New("repository is not initialized")

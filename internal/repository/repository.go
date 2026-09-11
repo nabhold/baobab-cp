@@ -97,6 +97,30 @@ type CapabilityGrantWriter interface {
 	RevokeGrant(ctx context.Context, grantID, revokedBy, reason string, expectedVersion int64) error
 }
 
+// ErrContextNotFound is returned by GetContext when no resolved Context
+// exists for the given context_id, or exists but is expired (ADR-BCP-004
+// §72: a caller must not be able to distinguish "never existed" from
+// "existed but expired" through a different error, since both mean the
+// same thing to a caller -- re-resolve).
+var ErrContextNotFound = errors.New("resolved context not found")
+
+// ContextRepository is the read contract for resolved Context values
+// (ADR-BCP-004 §70/§73, context.resolved_context -- migration 000031),
+// the store the Runtime APIs' resolutionRequest.context_id lookup needs.
+type ContextRepository interface {
+	GetContext(ctx context.Context, contextID string) (domain.Context, error)
+}
+
+// ContextWriter is the mutable resolved-Context contract. There is
+// deliberately no update method: a resolved Context is immutable
+// (ADR-BCP-004 §71) and never rewritten after creation.
+// DeleteContextsByTenant supports §74's cache-invalidation events
+// (tenant.suspended, etc.) and returns the number of rows removed.
+type ContextWriter interface {
+	CreateContext(ctx context.Context, resolved domain.Context) error
+	DeleteContextsByTenant(ctx context.Context, tenantID string) (int64, error)
+}
+
 // ErrIdentityNotFound is returned by ResolveIdentity when no ExternalIdentity
 // exists for the given (issuer, subject) pair -- ADR-0004 §11's "absent"
 // branch of identity resolution, distinct from a repository failure, so
@@ -265,6 +289,7 @@ type Repository struct {
 	Principals             map[string]domain.Principal                        // keyed by ID
 	ExternalIdentities     map[string]domain.ExternalIdentity                 // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
 	IdentityReferences     map[string]domain.IdentityReference                // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
+	Contexts               map[string]domain.Context                          // keyed by ID
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -321,6 +346,8 @@ var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
 var _ IdentityUnlinkingRepository = (*Repository)(nil)
 var _ IdentityMergeRepository = (*Repository)(nil)
+var _ ContextRepository = (*Repository)(nil)
+var _ ContextWriter = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
@@ -335,6 +362,7 @@ func NewInMemoryRepository() *Repository {
 		Principals:             map[string]domain.Principal{},
 		ExternalIdentities:     map[string]domain.ExternalIdentity{},
 		IdentityReferences:     map[string]domain.IdentityReference{},
+		Contexts:               map[string]domain.Context{},
 	}
 }
 
@@ -866,4 +894,46 @@ func (r *Repository) ListActiveInstances(_ context.Context, engineID string) ([]
 		}
 	}
 	return active, nil
+}
+
+func (r *Repository) CreateContext(_ context.Context, resolved domain.Context) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := resolved.Validate(); err != nil {
+		return fmt.Errorf("validate context: %w", err)
+	}
+	if resolved.ID == "" {
+		return errors.New("context id is required")
+	}
+	if _, exists := r.Contexts[resolved.ID]; exists {
+		return fmt.Errorf("context %s already exists", resolved.ID)
+	}
+	r.Contexts[resolved.ID] = resolved
+	return nil
+}
+
+func (r *Repository) GetContext(_ context.Context, contextID string) (domain.Context, error) {
+	if r == nil {
+		return domain.Context{}, errors.New("repository is nil")
+	}
+	resolved, ok := r.Contexts[contextID]
+	if !ok || resolved.IsExpired(time.Now().UTC()) {
+		return domain.Context{}, ErrContextNotFound
+	}
+	return resolved, nil
+}
+
+func (r *Repository) DeleteContextsByTenant(_ context.Context, tenantID string) (int64, error) {
+	if r == nil {
+		return 0, errors.New("repository is nil")
+	}
+	var removed int64
+	for id, resolved := range r.Contexts {
+		if resolved.TenantID == tenantID {
+			delete(r.Contexts, id)
+			removed++
+		}
+	}
+	return removed, nil
 }
