@@ -60,6 +60,54 @@ func TestPlatformContextHandlerResolvesAndPersistsContext(t *testing.T) {
 	}
 }
 
+// TestPlatformContextHandlerAcceptsRequestSuppliedTenantWhenClaimEmpty is
+// this handler's counterpart to
+// TestResolverHandlerAcceptsRequestSuppliedTenantWhenClaimEmpty: no workload
+// client in nabhold/baobab-iam mints a tenant_id claim today, so a request
+// body tenant_id is how the real-world workload path supplies one.
+func TestPlatformContextHandlerAcceptsRequestSuppliedTenantWhenClaimEmpty(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	handler := PlatformContextHandler{
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{},
+		},
+		Contexts: repo,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000007")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var response platformContextResolveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.TenantID != "tenant-123" {
+		t.Fatalf("expected the request-supplied tenant to be honored, got %q", response.TenantID)
+	}
+}
+
+// TestPlatformContextHandlerRejectsMissingTenantWhenClaimEmpty confirms a
+// workload with no tenant_id claim still cannot omit it from the request.
+func TestPlatformContextHandlerRejectsMissingTenantWhenClaimEmpty(t *testing.T) {
+	handler := PlatformContextHandler{Contexts: repository.NewInMemoryRepository()}
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("TENANT_CONTEXT_MISMATCH")) {
+		t.Fatalf("expected a workload with no tenant claim and no requested tenant to be rejected, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestPlatformContextHandlerRejectsUnauthenticated(t *testing.T) {
 	handler := PlatformContextHandler{Contexts: repository.NewInMemoryRepository()}
 	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)

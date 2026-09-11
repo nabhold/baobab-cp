@@ -96,8 +96,9 @@ func (h CapabilityResolveBatchHandler) Resolve(w http.ResponseWriter, r *http.Re
 		return
 	}
 	// Mirrors CapabilityResolveHandler's identical cross-tenant redemption
-	// guard (ADR-BCP-004 §71).
-	if trustedContext.TenantID != principal.TenantID {
+	// guard (ADR-BCP-004 §71) -- see resolveWorkloadTenant's doc comment
+	// for why this isn't a bare equality check.
+	if _, ok := resolveWorkloadTenant(principal.TenantID, trustedContext.TenantID); !ok {
 		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "the referenced context does not belong to the authenticated tenant", false)
 		return
 	}

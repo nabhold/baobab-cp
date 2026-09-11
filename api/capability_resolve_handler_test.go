@@ -98,6 +98,33 @@ func TestCapabilityResolveHandlerRedeemsContextAndResolves(t *testing.T) {
 	}
 }
 
+// TestCapabilityResolveHandlerAcceptsRequestWhenClaimEmpty is this
+// handler's counterpart to
+// TestResolverHandlerAcceptsRequestSuppliedTenantWhenClaimEmpty: a
+// workload token with no tenant_id claim of its own (the real-world case
+// for every workload client today) can still redeem a context_id that was
+// already tenant-validated when PlatformContextHandler created it.
+func TestCapabilityResolveHandlerAcceptsRequestWhenClaimEmpty(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	seedCapabilityResolveFixture(t, repo, "tenant-123")
+	seedResolvedContext(t, repo, "context-1", "tenant-123")
+
+	handler := CapabilityResolveHandler{
+		Contexts: repo,
+		Service:  service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}, Repository: repo},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/capabilities/resolve", bytes.NewReader([]byte(`{"context_id":"context-1","canonical_entity_id":"tenant-123"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestCapabilityResolveHandlerRejectsMissingFields(t *testing.T) {
 	handler := CapabilityResolveHandler{Contexts: repository.NewInMemoryRepository(), Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
 	req := httptest.NewRequest(http.MethodPost, "/v1/capabilities/resolve", bytes.NewReader([]byte(`{}`)))

@@ -54,7 +54,7 @@ func TestContextResolutionServiceResolvesTenantAndLegalEntity(t *testing.T) {
 		Identity: identityServiceFor(repository.NewInMemoryRepository()),
 		Tenants:  &fakeTenantStore{tenant: activeTenant()},
 	}
-	_, resolved, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "correlation-123", time.Now())
+	_, resolved, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "tenant-123", "correlation-123", time.Now())
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestContextResolutionServiceRejectsUnknownTenant(t *testing.T) {
 		Identity: identityServiceFor(repository.NewInMemoryRepository()),
 		Tenants:  &fakeTenantStore{err: domain.NotFoundError("tenant not found")},
 	}
-	if _, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "correlation-123", time.Now()); err == nil {
+	if _, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "tenant-123", "correlation-123", time.Now()); err == nil {
 		t.Fatal("expected an unknown tenant to be rejected")
 	}
 }
@@ -83,7 +83,7 @@ func TestContextResolutionServiceRejectsInactiveTenant(t *testing.T) {
 		Identity: identityServiceFor(repository.NewInMemoryRepository()),
 		Tenants:  &fakeTenantStore{tenant: tenant},
 	}
-	_, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "correlation-123", time.Now())
+	_, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "tenant-123", "correlation-123", time.Now())
 	if !errors.Is(err, ErrTenantNotActive) {
 		t.Fatalf("expected ErrTenantNotActive for a suspended tenant, got %v", err)
 	}
@@ -96,7 +96,7 @@ func TestContextResolutionServiceWrapsIdentityFailure(t *testing.T) {
 		Identity: IdentityService{Repository: repository.NewInMemoryRepository()},
 		Tenants:  &fakeTenantStore{tenant: activeTenant()},
 	}
-	_, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "correlation-123", time.Now())
+	_, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "tenant-123", "correlation-123", time.Now())
 	if !errors.Is(err, ErrIdentityResolutionFailed) {
 		t.Fatalf("expected ErrIdentityResolutionFailed, got %v", err)
 	}
@@ -104,7 +104,35 @@ func TestContextResolutionServiceWrapsIdentityFailure(t *testing.T) {
 
 func TestContextResolutionServiceRequiresTenantStore(t *testing.T) {
 	svc := ContextResolutionService{Identity: identityServiceFor(repository.NewInMemoryRepository())}
-	if _, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "correlation-123", time.Now()); err == nil {
+	if _, _, err := svc.Resolve(context.Background(), workloadPrincipalForContext(), "tenant-123", "correlation-123", time.Now()); err == nil {
 		t.Fatal("expected a nil Tenants store to be rejected")
+	}
+}
+
+// TestContextResolutionServiceResolvesRequestSuppliedTenantWhenClaimEmpty is
+// the regression test for the real-world case every other test in this file
+// skips over: no workload client in nabhold/baobab-iam mints a tenant_id
+// claim today (see api.resolveWorkloadTenant's doc comment for why), so
+// principal.TenantID is empty for every real workload token. Before this,
+// auth.NewOperationContext's own "verified workload principal is required"
+// check on an empty TenantID meant this path was unreachable outside tests
+// that hand-set a synthetic principal.TenantID. The caller (an API handler)
+// is responsible for reconciling the effective tenant via
+// api.resolveWorkloadTenant and passing it explicitly; this test exercises
+// that Resolve actually honors the passed-in tenantID rather than the
+// principal's own (empty) claim.
+func TestContextResolutionServiceResolvesRequestSuppliedTenantWhenClaimEmpty(t *testing.T) {
+	principal := workloadPrincipalForContext()
+	principal.TenantID = ""
+	svc := ContextResolutionService{
+		Identity: identityServiceFor(repository.NewInMemoryRepository()),
+		Tenants:  &fakeTenantStore{tenant: activeTenant()},
+	}
+	_, resolved, err := svc.Resolve(context.Background(), principal, "tenant-123", "correlation-123", time.Now())
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if resolved.TenantID != "tenant-123" {
+		t.Fatalf("expected the explicitly passed tenantID to win, got %q", resolved.TenantID)
 	}
 }

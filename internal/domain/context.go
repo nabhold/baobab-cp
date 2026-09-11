@@ -7,6 +7,12 @@ import (
 
 type ResolveContext struct {
 	ProductID string `json:"product_id"`
+	// TenantID is optional: a workload token that already carries its own
+	// tenant_id claim needs no request-supplied value (it must equal the
+	// claim if present, per api.resolveWorkloadTenant); a token with none
+	// -- every real workload client today, see that function's doc comment
+	// -- requires this field to say which tenant to resolve for.
+	TenantID string `json:"tenant_id,omitempty"`
 }
 
 func (c ResolveContext) Validate() error {

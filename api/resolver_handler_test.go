@@ -214,6 +214,56 @@ func TestResolverHandlerRejectsUnresolvableIdentity(t *testing.T) {
 // Context this handler built never looked up the tenant record at all, so a
 // workload token for a suspended or decommissioned tenant could still
 // successfully resolve.
+// TestResolverHandlerAcceptsRequestSuppliedTenantWhenClaimEmpty is the
+// regression test for the real-world workload path: no workload client in
+// nabhold/baobab-iam mints a tenant_id claim today (see
+// resolveWorkloadTenant's doc comment), so this -- not the synthetic
+// principal.TenantID every other test in this file hand-sets -- is what a
+// real workload token looks like. Before this, every such request 403'd at
+// api/router.go's authorize() before ever reaching this handler.
+func TestResolverHandlerAcceptsRequestSuppliedTenantWhenClaimEmpty(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	active := domain.Tenant{TenantID: "tenant-123", LegalEntityID: "THAMANI-GLOBAL", ObservedState: string(domain.LifecycleActive)}
+	handler := ResolverHandler{
+		Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{tenant: active},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000006")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	// No mappings/bindings are loaded, so this still denies deep in the
+	// resolution pipeline -- the point of this test is that it gets *past*
+	// authentication and tenant reconciliation to reach that pipeline at
+	// all, which TENANT_CONTEXT_MISMATCH or IDENTITY_RESOLUTION_FAILED
+	// would mean it did not.
+	if w.Code != http.StatusBadRequest || !bytes.Contains(w.Body.Bytes(), []byte("RESOLUTION_FAILED")) {
+		t.Fatalf("expected the request to reach the resolution pipeline (RESOLUTION_FAILED), got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestResolverHandlerRejectsMissingTenantWhenClaimEmpty confirms a workload
+// with no tenant_id claim still cannot leave the tenant entirely
+// unconstrained by omitting it from the request too.
+func TestResolverHandlerRejectsMissingTenantWhenClaimEmpty(t *testing.T) {
+	handler := ResolverHandler{Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"canonical_entity_id":"entity-abc"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", ActorType: "workload", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("TENANT_CONTEXT_MISMATCH")) {
+		t.Fatalf("expected a workload with no tenant claim and no requested tenant to be rejected, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestResolverHandlerRejectsInactiveTenant(t *testing.T) {
 	repo := repository.NewInMemoryRepository()
 	suspended := domain.Tenant{TenantID: "tenant-123", LegalEntityID: "THAMANI-GLOBAL", ObservedState: string(domain.LifecycleSuspended)}

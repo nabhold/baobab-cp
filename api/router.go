@@ -107,7 +107,13 @@ func (a *API) authorize(verifier auth.TokenVerifier, actorType, requiredScope st
 				problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_INVALID", "the bearer token is invalid", false)
 				return
 			}
-			if principal.ActorType != actorType || !principal.HasScope(requiredScope) || (actorType == "workload" && (principal.TenantID == "" || principal.ClientID == "")) {
+			// principal.TenantID == "" is deliberately not checked here: no
+			// workload client mints that claim today (see
+			// resolveWorkloadTenant's doc comment), so requiring it would
+			// reject every real workload request outright. Each handler
+			// reconciles the effective tenant via resolveWorkloadTenant
+			// instead, once it has the request body to consult.
+			if principal.ActorType != actorType || !principal.HasScope(requiredScope) || (actorType == "workload" && principal.ClientID == "") {
 				problem(w, r, http.StatusForbidden, "AUTHORIZATION_DENIED", "the authenticated principal lacks required authority", false)
 				return
 			}
