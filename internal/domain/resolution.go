@@ -24,26 +24,32 @@ type ContextSource struct {
 // Context is an immutable, server-resolved operation scope. Distinct IDs are
 // deliberately separate: none is an alias for another.
 type Context struct {
-	ID                 string                   `json:"id,omitempty"`
-	PrincipalID        string                   `json:"principal_id"`
-	TenantID           string                   `json:"tenant_id"`
-	LegalEntityID      string                   `json:"legal_entity_id,omitempty"`
-	OrganisationID     string                   `json:"organisation_id,omitempty"`
-	BusinessUnitID     string                   `json:"business_unit_id,omitempty"`
-	DigitalEstateID    string                   `json:"digital_estate_id,omitempty"`
-	DigitalPropertyID  string                   `json:"digital_property_id,omitempty"`
-	ChannelID          string                   `json:"channel_id,omitempty"`
-	MarketID           string                   `json:"market_id,omitempty"`
-	Jurisdiction       string                   `json:"jurisdiction,omitempty"`
-	CountryCode        string                   `json:"country_code,omitempty"`
-	CurrencyCode       string                   `json:"currency_code,omitempty"`
-	Locale             string                   `json:"locale,omitempty"`
-	DeploymentRegion   string                   `json:"deployment_region,omitempty"`
-	Environment        string                   `json:"environment,omitempty"`
-	IsolationProfileID string                   `json:"isolation_profile_id,omitempty"`
-	CorrelationID      string                   `json:"correlation_id"`
-	ResolvedAt         time.Time                `json:"resolved_at"`
-	Provenance         map[string]ContextSource `json:"provenance"`
+	ID                 string    `json:"id,omitempty"`
+	PrincipalID        string    `json:"principal_id"`
+	TenantID           string    `json:"tenant_id"`
+	LegalEntityID      string    `json:"legal_entity_id,omitempty"`
+	OrganisationID     string    `json:"organisation_id,omitempty"`
+	BusinessUnitID     string    `json:"business_unit_id,omitempty"`
+	DigitalEstateID    string    `json:"digital_estate_id,omitempty"`
+	DigitalPropertyID  string    `json:"digital_property_id,omitempty"`
+	ChannelID          string    `json:"channel_id,omitempty"`
+	MarketID           string    `json:"market_id,omitempty"`
+	Jurisdiction       string    `json:"jurisdiction,omitempty"`
+	CountryCode        string    `json:"country_code,omitempty"`
+	CurrencyCode       string    `json:"currency_code,omitempty"`
+	Locale             string    `json:"locale,omitempty"`
+	DeploymentRegion   string    `json:"deployment_region,omitempty"`
+	Environment        string    `json:"environment,omitempty"`
+	IsolationProfileID string    `json:"isolation_profile_id,omitempty"`
+	CorrelationID      string    `json:"correlation_id"`
+	ResolvedAt         time.Time `json:"resolved_at"`
+	// ExpiresAt is optional (ADR-BCP-004 §72, "Context Lifetime": "Context
+	// MAY have bounded lifetime"). Nil means no bound is imposed; a
+	// long-running caller SHALL NOT assume an unbounded context remains
+	// valid forever regardless, but this package does not itself impose a
+	// default TTL.
+	ExpiresAt  *time.Time               `json:"expires_at,omitempty"`
+	Provenance map[string]ContextSource `json:"provenance"`
 }
 
 func (c Context) Validate() error {
@@ -53,12 +59,22 @@ func (c Context) Validate() error {
 	if strings.TrimSpace(c.CorrelationID) == "" || c.ResolvedAt.IsZero() {
 		return errors.New("correlation_id and resolved_at are required")
 	}
+	if c.ExpiresAt != nil && !c.ExpiresAt.After(c.ResolvedAt) {
+		return errors.New("expires_at must be after resolved_at")
+	}
 	for field, source := range c.Provenance {
 		if field == "" || source.Source == "" || source.TrustLevel == "" || source.TrustLevel == TrustUntrusted {
 			return errors.New("context provenance must identify a trusted source")
 		}
 	}
 	return nil
+}
+
+// IsExpired reports whether the context's optional lifetime bound has
+// passed as of at (ADR-BCP-004 §72). A context with no ExpiresAt never
+// expires by this check alone.
+func (c Context) IsExpired(at time.Time) bool {
+	return c.ExpiresAt != nil && !at.Before(*c.ExpiresAt)
 }
 
 type IsolationProfile struct {

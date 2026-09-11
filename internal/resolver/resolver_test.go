@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"testing"
+	"time"
 
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
@@ -84,5 +85,39 @@ func TestContextResolverMergesEvidenceAndTrust(t *testing.T) {
 	}
 	if ctx.Provenance["tenant"].TrustLevel != TrustAuthorised {
 		t.Fatal("expected authorised provenance")
+	}
+	// ADR-BCP-004 §70: every successfully resolved context SHALL receive a
+	// context_id.
+	if ctx.ID == "" {
+		t.Fatal("resolved Context has no context_id")
+	}
+	if ctx.ExpiresAt != nil {
+		t.Fatal("expected no ExpiresAt when evidence.TTL is unset")
+	}
+}
+
+func TestContextResolverAppliesRequestedTTL(t *testing.T) {
+	resolver := ContextResolverImpl{}
+	evidence := ResolutionEvidence{
+		PrincipalID:   "baobab-trade",
+		TenantID:      "tenant-123",
+		CorrelationID: "correlation-123",
+		TTL:           5 * time.Minute,
+	}
+	ctx, err := resolver.Resolve(t.Context(), evidence)
+	if err != nil {
+		t.Fatalf("context resolution failed: %v", err)
+	}
+	if ctx.ExpiresAt == nil {
+		t.Fatal("expected ExpiresAt to be set when evidence.TTL is positive")
+	}
+	if got := ctx.ExpiresAt.Sub(ctx.ResolvedAt); got != 5*time.Minute {
+		t.Fatalf("expected a 5-minute lifetime, got %s", got)
+	}
+	if ctx.IsExpired(ctx.ResolvedAt) {
+		t.Fatal("a freshly resolved context reported itself already expired")
+	}
+	if !ctx.IsExpired(ctx.ExpiresAt.Add(time.Second)) {
+		t.Fatal("a context past its ExpiresAt did not report itself expired")
 	}
 }
