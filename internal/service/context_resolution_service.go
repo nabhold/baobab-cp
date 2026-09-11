@@ -47,10 +47,14 @@ type ContextResolutionService struct {
 }
 
 // Resolve mirrors auth.NewOperationContext's signature and return shape
-// (context.Context, domain.Context, error) so call sites that already use
-// NewOperationContext directly can switch to this with a like-for-like
-// change, gaining the tenant/legal-entity stages this type adds on top.
-func (s ContextResolutionService) Resolve(ctx context.Context, principal auth.Principal, correlationID string, now time.Time) (context.Context, domain.Context, error) {
+// (context.Context, domain.Context, error), extended with an explicit
+// tenantID parameter -- the effective tenant, already reconciled by the
+// caller via resolveWorkloadTenant between the token's own (usually empty)
+// tenant_id claim and any request-supplied tenant -- so call sites that
+// already use NewOperationContext directly can switch to this with a
+// like-for-like change, gaining the tenant/legal-entity stages this type
+// adds on top.
+func (s ContextResolutionService) Resolve(ctx context.Context, principal auth.Principal, tenantID string, correlationID string, now time.Time) (context.Context, domain.Context, error) {
 	if s.Tenants == nil {
 		return nil, domain.Context{}, errors.New("tenant store is required")
 	}
@@ -60,15 +64,18 @@ func (s ContextResolutionService) Resolve(ctx context.Context, principal auth.Pr
 	if err != nil {
 		return nil, domain.Context{}, fmt.Errorf("%w: %v", ErrIdentityResolutionFailed, err)
 	}
+	principal.TenantID = tenantID
 	opCtx, trustedContext, err := auth.NewOperationContext(ctx, principal, resolvedPrincipal.ID, correlationID, now)
 	if err != nil {
 		return nil, domain.Context{}, err
 	}
 	// ADR-BCP-004 §52 "Resolve tenant" / §53 "unknown tenant SHALL fail":
-	// the JWT's tenant_id claim is authenticated but not authoritative on
-	// its own -- it must name a tenant that actually exists in the Control
-	// Plane's own registry and is currently active.
-	tenant, err := s.Tenants.GetTenant(ctx, principal.TenantID)
+	// the effective tenant is authenticated (or, for a token with no
+	// tenant_id claim, an authenticated workload's own explicit request --
+	// see resolveWorkloadTenant) but not authoritative on its own -- it
+	// must name a tenant that actually exists in the Control Plane's own
+	// registry and is currently active.
+	tenant, err := s.Tenants.GetTenant(ctx, tenantID)
 	if err != nil {
 		return nil, domain.Context{}, fmt.Errorf("resolve tenant: %w", err)
 	}

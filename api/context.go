@@ -30,7 +30,12 @@ func (a *API) resolveContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	principal, _ := auth.PrincipalFromContext(r.Context())
-	resolved, err := a.store.ResolveContext(r.Context(), requestMetadata(r, principal), principal.TenantID, command.ProductID)
+	tenantID, ok := resolveWorkloadTenant(principal.TenantID, command.TenantID)
+	if !ok {
+		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "requested tenant does not match verified workload identity", false)
+		return
+	}
+	resolved, err := a.store.ResolveContext(r.Context(), requestMetadata(r, principal), tenantID, command.ProductID)
 	if errors.Is(err, store.ErrContextDenied) {
 		problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "tenant context or product entitlement could not be resolved", false)
 		return

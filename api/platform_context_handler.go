@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -32,6 +34,14 @@ type PlatformContextHandler struct {
 	TTL time.Duration
 }
 
+type platformContextResolveRequest struct {
+	// TenantID is optional: required only when the workload token carries
+	// no tenant_id claim of its own (every real workload client today --
+	// see resolveWorkloadTenant's doc comment); must equal the claim if the
+	// token does carry one.
+	TenantID string `json:"tenant_id"`
+}
+
 type platformContextResolveResponse struct {
 	ContextID  string     `json:"context_id"`
 	TenantID   string     `json:"tenant_id"`
@@ -49,10 +59,25 @@ func (h PlatformContextHandler) Resolve(w http.ResponseWriter, r *http.Request) 
 		problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "verified workload identity is required", false)
 		return
 	}
+	// An empty body is valid here (pre-existing callers, and any workload
+	// whose token already carries its own tenant_id, never need to send
+	// one) -- only a malformed non-empty body is rejected.
+	var req platformContextResolveRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		problem(w, r, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), false)
+		return
+	}
+	tenantID, ok := resolveWorkloadTenant(principal.TenantID, req.TenantID)
+	if !ok {
+		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "requested tenant does not match verified workload identity", false)
+		return
+	}
 	// ADR-BCP-004 §52: resolve identity -> resolve tenant -> validate
 	// principal<->tenant relationship -> resolve legal entity, all fail
 	// closed, mirroring ResolverHandler.Resolve's identical step.
-	_, trustedContext, err := h.ContextResolution.Resolve(r.Context(), principal, correlationID(r), time.Now())
+	_, trustedContext, err := h.ContextResolution.Resolve(r.Context(), principal, tenantID, correlationID(r), time.Now())
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrIdentityResolutionFailed):

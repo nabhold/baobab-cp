@@ -39,8 +39,8 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "verified workload identity is required", false)
 		return
 	}
-	requestedTenant := req.TenantID
-	if requestedTenant != "" && requestedTenant != principal.TenantID {
+	tenantID, ok := resolveWorkloadTenant(principal.TenantID, req.TenantID)
+	if !ok {
 		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "requested tenant does not match verified workload identity", false)
 		return
 	}
@@ -56,7 +56,7 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 	// ADR-BCP-004 §52: resolve identity -> resolve tenant -> validate
 	// principal<->tenant relationship -> resolve legal entity, all fail
 	// closed.
-	operationCtx, trustedContext, err := h.ContextResolution.Resolve(r.Context(), principal, correlationID(r), time.Now())
+	operationCtx, trustedContext, err := h.ContextResolution.Resolve(r.Context(), principal, tenantID, correlationID(r), time.Now())
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrIdentityResolutionFailed):

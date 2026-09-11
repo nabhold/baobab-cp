@@ -63,8 +63,13 @@ func (h CapabilityResolveHandler) Resolve(w http.ResponseWriter, r *http.Request
 	// (ADR-BCP-004 §71, Context Immutability). A workload token for a
 	// different tenant redeeming someone else's context_id is exactly the
 	// cross-tenant leakage this check exists to prevent -- it must fail
-	// closed rather than silently resolve against the wrong tenant.
-	if trustedContext.TenantID != principal.TenantID {
+	// closed rather than silently resolve against the wrong tenant. Uses
+	// resolveWorkloadTenant, not a bare equality check, because a workload
+	// token with no tenant_id claim of its own (every real workload client
+	// today) has nothing to compare against; the context it is redeeming
+	// was itself already tenant-validated when PlatformContextHandler
+	// created it, so that is what's trusted here instead.
+	if _, ok := resolveWorkloadTenant(principal.TenantID, trustedContext.TenantID); !ok {
 		problem(w, r, http.StatusForbidden, "TENANT_CONTEXT_MISMATCH", "the referenced context does not belong to the authenticated tenant", false)
 		return
 	}
