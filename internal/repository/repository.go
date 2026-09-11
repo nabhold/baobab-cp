@@ -144,6 +144,34 @@ type DigitalEstateWriter interface {
 	CreateDigitalEstate(ctx context.Context, estate domain.DigitalEstate) error
 }
 
+// ErrTenantIsolationProfileOverlap is returned when an
+// AssignIsolationProfileToTenant insert is rejected by policy.
+// tenant_isolation_profile's tenant_isolation_profile_active_excl exclusion
+// constraint (migration 000024): unlike ErrMarketAssignmentOverlap, this
+// excludes on tenant_id alone, not tenant_id+profile_id -- a tenant SHALL
+// have at most one active isolation profile assignment at any given time,
+// regardless of which profile.
+var ErrTenantIsolationProfileOverlap = errors.New("overlapping active tenant isolation profile assignment")
+
+// IsolationProfileRepository is the read contract for isolation profiles
+// and tenant assignments (ADR-BCP-004 §4/§55, policy.isolation_profile /
+// policy.tenant_isolation_profile -- migration 000004). The tables have
+// existed since early in this codebase's history; this and
+// IsolationProfileWriter are the first Go code to read or write them.
+type IsolationProfileRepository interface {
+	GetIsolationProfile(ctx context.Context, id string) (domain.IsolationProfile, error)
+	// GetCurrentIsolationProfileForTenant returns the IsolationProfile whose
+	// assignment covers at (effective_from <= at, and either no
+	// effective_to or effective_to > at).
+	GetCurrentIsolationProfileForTenant(ctx context.Context, tenantID string, at time.Time) (domain.IsolationProfile, error)
+}
+
+// IsolationProfileWriter is the mutable isolation-profile contract.
+type IsolationProfileWriter interface {
+	CreateIsolationProfile(ctx context.Context, profile domain.IsolationProfile) error
+	AssignIsolationProfileToTenant(ctx context.Context, assignment domain.TenantIsolationProfileAssignment) error
+}
+
 // ErrIdentityNotFound is returned by ResolveIdentity when no ExternalIdentity
 // exists for the given (issuer, subject) pair -- ADR-0004 §11's "absent"
 // branch of identity resolution, distinct from a repository failure, so
@@ -314,6 +342,11 @@ type Repository struct {
 	IdentityReferences     map[string]domain.IdentityReference                // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
 	Contexts               map[string]domain.Context                          // keyed by ID
 	DigitalEstates         map[string]domain.DigitalEstate                    // keyed by ID
+	IsolationProfiles      map[string]domain.IsolationProfile                 // keyed by ID
+	// TenantIsolationProfiles has no synthetic ID (mirroring the real
+	// table's PRIMARY KEY (tenant_id, isolation_profile_id, effective_from));
+	// keyed by "tenant_id\x00isolation_profile_id\x00effective_from".
+	TenantIsolationProfiles map[string]domain.TenantIsolationProfileAssignment
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -375,22 +408,26 @@ var _ ContextWriter = (*Repository)(nil)
 var _ ContextStore = (*Repository)(nil)
 var _ DigitalEstateRepository = (*Repository)(nil)
 var _ DigitalEstateWriter = (*Repository)(nil)
+var _ IsolationProfileRepository = (*Repository)(nil)
+var _ IsolationProfileWriter = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
-		Mappings:               map[string][]domain.Mapping{},
-		Bindings:               map[string][]resolver.CapabilityBinding{},
-		EngineInstances:        map[string][]resolver.EngineInstance{},
-		MappingScopes:          map[string]domain.MappingScope{},
-		CapabilityScopes:       map[string]capabilitydomain.CapabilityScope{},
-		Grants:                 map[string]capabilitydomain.CapabilityGrant{},
-		Capabilities:           map[string]capabilitydomain.Capability{},
-		CapabilityDependencies: map[string][]capabilitydomain.CapabilityDependency{},
-		Principals:             map[string]domain.Principal{},
-		ExternalIdentities:     map[string]domain.ExternalIdentity{},
-		IdentityReferences:     map[string]domain.IdentityReference{},
-		Contexts:               map[string]domain.Context{},
-		DigitalEstates:         map[string]domain.DigitalEstate{},
+		Mappings:                map[string][]domain.Mapping{},
+		Bindings:                map[string][]resolver.CapabilityBinding{},
+		EngineInstances:         map[string][]resolver.EngineInstance{},
+		MappingScopes:           map[string]domain.MappingScope{},
+		CapabilityScopes:        map[string]capabilitydomain.CapabilityScope{},
+		Grants:                  map[string]capabilitydomain.CapabilityGrant{},
+		Capabilities:            map[string]capabilitydomain.Capability{},
+		CapabilityDependencies:  map[string][]capabilitydomain.CapabilityDependency{},
+		Principals:              map[string]domain.Principal{},
+		ExternalIdentities:      map[string]domain.ExternalIdentity{},
+		IdentityReferences:      map[string]domain.IdentityReference{},
+		Contexts:                map[string]domain.Context{},
+		DigitalEstates:          map[string]domain.DigitalEstate{},
+		IsolationProfiles:       map[string]domain.IsolationProfile{},
+		TenantIsolationProfiles: map[string]domain.TenantIsolationProfileAssignment{},
 	}
 }
 
@@ -1010,4 +1047,93 @@ func (r *Repository) ListDigitalEstatesForTenant(_ context.Context, tenantID str
 		}
 	}
 	return out, nil
+}
+
+func (r *Repository) CreateIsolationProfile(_ context.Context, profile domain.IsolationProfile) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := profile.Validate(); err != nil {
+		return fmt.Errorf("validate isolation profile: %w", err)
+	}
+	if profile.ID == "" {
+		return errors.New("isolation profile id is required")
+	}
+	if _, exists := r.IsolationProfiles[profile.ID]; exists {
+		return fmt.Errorf("isolation profile %s already exists", profile.ID)
+	}
+	for _, existing := range r.IsolationProfiles {
+		if existing.Name == profile.Name {
+			return fmt.Errorf("isolation profile name %q is already in use", profile.Name)
+		}
+	}
+	r.IsolationProfiles[profile.ID] = profile
+	return nil
+}
+
+func (r *Repository) GetIsolationProfile(_ context.Context, id string) (domain.IsolationProfile, error) {
+	if r == nil {
+		return domain.IsolationProfile{}, errors.New("repository is nil")
+	}
+	profile, ok := r.IsolationProfiles[id]
+	if !ok {
+		return domain.IsolationProfile{}, fmt.Errorf("isolation profile %s not found", id)
+	}
+	return profile, nil
+}
+
+func tenantIsolationProfileKey(a domain.TenantIsolationProfileAssignment) string {
+	return a.TenantID + "\x00" + a.IsolationProfileID + "\x00" + a.EffectiveFrom.Format(time.RFC3339Nano)
+}
+
+// tenantIsolationProfilePeriodsOverlap mirrors
+// tenant_isolation_profile_active_excl's [effective_from, effective_to)
+// semantics: a nil EffectiveTo behaves as unbounded (+infinity).
+func tenantIsolationProfilePeriodsOverlap(a, b domain.TenantIsolationProfileAssignment) bool {
+	aEndsBeforeBStarts := a.EffectiveTo != nil && !a.EffectiveTo.After(b.EffectiveFrom)
+	bEndsBeforeAStarts := b.EffectiveTo != nil && !b.EffectiveTo.After(a.EffectiveFrom)
+	return !aEndsBeforeBStarts && !bEndsBeforeAStarts
+}
+
+func (r *Repository) AssignIsolationProfileToTenant(_ context.Context, assignment domain.TenantIsolationProfileAssignment) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := assignment.Validate(); err != nil {
+		return fmt.Errorf("validate tenant isolation profile assignment: %w", err)
+	}
+	key := tenantIsolationProfileKey(assignment)
+	if _, exists := r.TenantIsolationProfiles[key]; exists {
+		return fmt.Errorf("tenant isolation profile assignment %s already exists", key)
+	}
+	for _, existing := range r.TenantIsolationProfiles {
+		if existing.TenantID == assignment.TenantID && tenantIsolationProfilePeriodsOverlap(existing, assignment) {
+			return fmt.Errorf("%w: tenant %s", ErrTenantIsolationProfileOverlap, assignment.TenantID)
+		}
+	}
+	r.TenantIsolationProfiles[key] = assignment
+	return nil
+}
+
+func (r *Repository) GetCurrentIsolationProfileForTenant(_ context.Context, tenantID string, at time.Time) (domain.IsolationProfile, error) {
+	if r == nil {
+		return domain.IsolationProfile{}, errors.New("repository is nil")
+	}
+	for _, assignment := range r.TenantIsolationProfiles {
+		if assignment.TenantID != tenantID {
+			continue
+		}
+		if assignment.EffectiveFrom.After(at) {
+			continue
+		}
+		if assignment.EffectiveTo != nil && !assignment.EffectiveTo.After(at) {
+			continue
+		}
+		profile, ok := r.IsolationProfiles[assignment.IsolationProfileID]
+		if !ok {
+			continue
+		}
+		return profile, nil
+	}
+	return domain.IsolationProfile{}, fmt.Errorf("no active isolation profile assignment for tenant %s", tenantID)
 }
