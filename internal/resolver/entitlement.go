@@ -70,16 +70,18 @@ func (EntitlementResolverImpl) Resolve(_ context.Context, q EntitlementResolutio
 // precedence over inclusion, and a country excluded from an otherwise
 // matching scope makes it ineligible outright.
 //
-// Known gap: domain.Context does not yet carry organisation_id,
-// business_unit_id, customer_segment_id, catalogue_id, operating_region_id
-// or geographic_region_id -- the ADR-BCP-004 Context Resolver rewrite
-// (#74 sub-work item 3) is expected to add these. A scope that restricts
-// on one of those dimensions cannot be checked against the request context
-// yet, so it is treated as unrestricted on that dimension rather than as a
-// hard mismatch, exactly like every other populated-but-not-yet-checkable
-// dimension already documented elsewhere in this codebase (see
-// domain.MappingScope's own doc comment). This is a tracked limitation,
-// not a silent one.
+// domain.Context deliberately does not carry customer_segment_id,
+// catalogue_id, operating_region_id or geographic_region_id: ADR-BCP-004
+// §5's canonical PlatformContext field list does not include them, and
+// §65 ("OperationScope") is explicit that "only explicitly approved
+// fields SHALL influence platform resolution" -- these are
+// request/operation-specific dimensions threaded through OperationScope
+// on a per-capability-resolution-request basis (ADR-BCP-003 §64-65), not
+// universal resolved-context fields every scope check can assume exists.
+// A CapabilityScope that restricts on one of those four dimensions is
+// therefore treated as unrestricted on it here, by design, not as an
+// unmodeled gap. organisation_id and business_unit_id, which ARE part of
+// PlatformContext's canonical model, are checked below.
 func scopeCompatible(ctx Context, scope capabilitydomain.CapabilityScope) bool {
 	checks := []struct {
 		value string
@@ -87,6 +89,8 @@ func scopeCompatible(ctx Context, scope capabilitydomain.CapabilityScope) bool {
 	}{
 		{ctx.TenantID, scope.TenantID},
 		{ctx.LegalEntityID, scope.LegalEntityID},
+		{ctx.OrganisationID, scope.OrganisationID},
+		{ctx.BusinessUnitID, scope.BusinessUnitID},
 		{ctx.DigitalEstateID, scope.DigitalEstateID},
 		{ctx.DigitalPropertyID, scope.DigitalPropertyID},
 		{ctx.ChannelID, scope.ChannelID},

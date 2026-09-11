@@ -52,6 +52,28 @@ func TestEntitlementResolverDeniesWhenNoEffectiveGrant(t *testing.T) {
 	}
 }
 
+func TestEntitlementResolverChecksOrganisationAndBusinessUnit(t *testing.T) {
+	now := time.Now().UTC()
+	resolver := EntitlementResolverImpl{}
+	decision, err := resolver.Resolve(context.Background(), EntitlementResolutionQuery{
+		CapabilityKey: "erp.receivables",
+		Context:       Context{TenantID: "tn_zuribeans", OrganisationID: "org-a", BusinessUnitID: "bu-a"},
+		At:            now,
+		Grants: []capabilitydomain.CapabilityGrant{
+			{ID: "grant-org-b", CapabilityKey: "erp.receivables", ScopeID: "scope-org-b", Source: capabilitydomain.GrantSourcePlatformBaseline, Status: capabilitydomain.GrantStatusActive, EffectiveFrom: now.Add(-time.Hour)},
+		},
+		Scopes: map[string]capabilitydomain.CapabilityScope{
+			"scope-org-b": {TenantID: "tn_zuribeans", OrganisationID: "org-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve entitlement: %v", err)
+	}
+	if decision.Entitled {
+		t.Fatal("expected denial for a grant scoped to a different organisation")
+	}
+}
+
 func TestEntitlementResolverDeniesWhenScopeIncompatible(t *testing.T) {
 	now := time.Now().UTC()
 	resolver := EntitlementResolverImpl{}

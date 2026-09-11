@@ -28,6 +28,8 @@ type Context struct {
 	PrincipalID        string                   `json:"principal_id"`
 	TenantID           string                   `json:"tenant_id"`
 	LegalEntityID      string                   `json:"legal_entity_id,omitempty"`
+	OrganisationID     string                   `json:"organisation_id,omitempty"`
+	BusinessUnitID     string                   `json:"business_unit_id,omitempty"`
 	DigitalEstateID    string                   `json:"digital_estate_id,omitempty"`
 	DigitalPropertyID  string                   `json:"digital_property_id,omitempty"`
 	ChannelID          string                   `json:"channel_id,omitempty"`
