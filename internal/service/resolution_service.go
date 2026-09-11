@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 	"github.com/nabhold/baobab-cp/internal/repository"
 	"github.com/nabhold/baobab-cp/internal/resolver"
@@ -39,6 +40,24 @@ type ResolutionResult struct {
 type ResolutionService struct {
 	Pipeline   resolver.ResolutionPipeline
 	Repository repository.ResolverRepository
+	// EnforceEntitlement opts this service into the capability entitlement
+	// and lifecycle-eligibility gates (ADR-BCP-003 §9/§6, resolver.
+	// EntitlementResolverImpl and Capability.IsResolvable) for real
+	// traffic. False by default: no rollout/backfill of
+	// capability.capability_grant or capability.capability exists yet for
+	// the "baobab_trade" placeholder capability key this service resolves
+	// against, so turning this on unconditionally would fail every
+	// resolution rather than merely skip a check. Existing callers that
+	// never set this field (every caller today) see no behavior change at
+	// all -- Grants/Capability are only fetched, and the resolver.
+	// ResolutionRequest.Grants/.Capability fields only populated, when
+	// this is explicitly true. Grants and Scopes are read separately from
+	// Repository so enabling this doesn't also require reconstructing the
+	// service's existing Repository wiring.
+	EnforceEntitlement bool
+	Grants             repository.CapabilityGrantRepository
+	Scopes             repository.CapabilityScopeWriter
+	CapabilityRegistry repository.CapabilityRegistryRepository
 }
 
 func (s ResolutionService) Resolve(ctx context.Context, req ResolutionRequest) (ResolutionResult, error) {
@@ -73,14 +92,59 @@ func (s ResolutionService) Resolve(ctx context.Context, req ResolutionRequest) (
 		req.Mappings, req.Bindings, req.EngineInstances = mappings, bindings, instances
 	}
 
-	pipelineResult, err := s.Pipeline.Resolve(ctx, resolver.ResolutionRequest{
+	pipelineReq := resolver.ResolutionRequest{
 		TenantID:          req.TenantID,
 		CanonicalEntityID: req.CanonicalEntityID,
 		Context:           req.Context,
 		Candidates:        req.Mappings,
 		Bindings:          req.Bindings,
 		EngineInstances:   req.EngineInstances,
-	})
+	}
+
+	if s.EnforceEntitlement {
+		if s.Grants != nil {
+			grants, err := s.Grants.ListGrants(ctx, req.Context.TenantID, "baobab_trade")
+			if err != nil {
+				return ResolutionResult{}, fmt.Errorf("load capability grants: %w", err)
+			}
+			// resolver.ResolutionRequest.Grants uses nil (not merely empty)
+			// as its own opt-out signal, so a ListGrants result of no rows
+			// -- which the fake and Postgres implementations both return as
+			// a nil slice -- must not be forwarded as-is: that would
+			// silently re-disable the very gate EnforceEntitlement just
+			// turned on. Force it non-nil so "no grants found" is
+			// unambiguously distinct from "Grants was never populated".
+			if grants == nil {
+				grants = []capabilitydomain.CapabilityGrant{}
+			}
+			pipelineReq.Grants = grants
+			if s.Scopes != nil {
+				scopes := make(map[string]capabilitydomain.CapabilityScope, len(grants))
+				for _, grant := range grants {
+					if _, alreadyLoaded := scopes[grant.ScopeID]; alreadyLoaded {
+						continue
+					}
+					scope, err := s.Scopes.GetCapabilityScope(ctx, grant.ScopeID)
+					if err != nil {
+						continue
+					}
+					scopes[grant.ScopeID] = scope
+				}
+				pipelineReq.Scopes = scopes
+			}
+		}
+		// A capability absent from the registry does not fail resolution
+		// closed here -- capability registration (ADR-BCP-003 §4) is a
+		// separate, still-incomplete rollout of its own; only a capability
+		// the registry actually knows about gets its lifecycle checked.
+		if s.CapabilityRegistry != nil {
+			if capability, err := s.CapabilityRegistry.GetCapability(ctx, "baobab_trade"); err == nil {
+				pipelineReq.Capability = &capability
+			}
+		}
+	}
+
+	pipelineResult, err := s.Pipeline.Resolve(ctx, pipelineReq)
 	if err != nil {
 		return ResolutionResult{}, fmt.Errorf("resolution failed: %w", err)
 	}
