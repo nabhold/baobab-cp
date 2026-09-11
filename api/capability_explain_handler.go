@@ -65,7 +65,7 @@ func (h CapabilityExplainHandler) Explain(w http.ResponseWriter, r *http.Request
 		return
 	}
 	principal, ok := auth.PrincipalFromContext(r.Context())
-	if !ok || principal.ActorType != "admin" || !principal.HasScope("capabilities:explain") {
+	if !ok || principal.ActorType != "human" || !principal.HasScope("capabilities:explain") {
 		problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "verified admin identity is required", false)
 		return
 	}

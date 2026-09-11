@@ -15,7 +15,7 @@ import (
 )
 
 func explainAdminPrincipal() auth.Principal {
-	return auth.Principal{Subject: "admin-123", ActorType: "admin", TokenID: "token-123", Scopes: map[string]struct{}{"capabilities:explain": {}}}
+	return auth.Principal{Subject: "admin-123", ActorType: "human", TokenID: "token-123", Scopes: map[string]struct{}{"capabilities:explain": {}}}
 }
 
 func TestCapabilityExplainHandlerExplainsSuccessfulResolution(t *testing.T) {
@@ -103,7 +103,7 @@ func TestCapabilityExplainHandlerRejectsNonAdmin(t *testing.T) {
 func TestCapabilityExplainHandlerRejectsAdminWithoutExplainScope(t *testing.T) {
 	handler := CapabilityExplainHandler{Contexts: repository.NewInMemoryRepository(), Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}}}
 	req := httptest.NewRequest(http.MethodPost, "/v1/capabilities/explain", bytes.NewReader([]byte(`{"context_id":"context-1","canonical_entity_id":"entity-1"}`)))
-	principal := auth.Principal{Subject: "admin-1", ActorType: "admin", Scopes: map[string]struct{}{"tenant:read": {}}}
+	principal := auth.Principal{Subject: "admin-1", ActorType: "human", Scopes: map[string]struct{}{"tenant:read": {}}}
 	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
 	w := httptest.NewRecorder()
 
