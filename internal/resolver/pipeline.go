@@ -100,7 +100,7 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		CapabilityKey:    capabilityResult.CapabilityKey,
 		EngineID:         capabilityResult.EngineID,
 		EngineInstanceID: capabilityResult.EngineInstanceID,
-		BindingMode:      capabilityResult.BindingMode,
+		BindingMode:      domain.BindingMode(capabilityResult.BindingMode),
 		Status:           "ACTIVE",
 		ContractVersion:  capabilityResult.ContractVersion,
 	})

@@ -21,7 +21,7 @@ func TestCapabilityResolverResolveUsesHighestPriorityBinding(t *testing.T) {
 			Locale:        "en-ZA",
 		},
 		Bindings: []CapabilityBinding{
-			{CapabilityKey: "baobab_trade", EngineID: "engine-1", EngineInstanceID: "instance-1", BindingMode: "SECONDARY", Status: "ACTIVE", Priority: 10, ContractVersion: "v1"},
+			{CapabilityKey: "baobab_trade", EngineID: "engine-1", EngineInstanceID: "instance-1", BindingMode: "FALLBACK", Status: "ACTIVE", Priority: 10, ContractVersion: "v1"},
 			{CapabilityKey: "baobab_trade", EngineID: "engine-2", EngineInstanceID: "instance-2", BindingMode: "PRIMARY", Status: "ACTIVE", Priority: 100, ContractVersion: "v1"},
 		},
 	}
@@ -92,6 +92,38 @@ func TestCapabilityResolverFailsClosedOnAmbiguity(t *testing.T) {
 	})
 	if err == nil || err.Error() != "capability binding is ambiguous" {
 		t.Fatalf("expected ambiguity failure, got %v", err)
+	}
+}
+
+func TestCapabilityResolverTreatsShadowOnlyAsNoEligibleBinding(t *testing.T) {
+	resolver := CapabilityResolverImpl{}
+	_, err := resolver.Resolve(context.Background(), CapabilityResolutionQuery{
+		CapabilityKey: "erp.receivables",
+		Context:       Context{TenantID: "tn_zuribeans"},
+		Bindings: []CapabilityBinding{
+			{ID: "shadow", CapabilityKey: "erp.receivables", EngineInstanceID: "erp-shadow", BindingMode: "SHADOW", Priority: 100, Status: "ACTIVE"},
+		},
+	})
+	if err == nil || err.Error() != "capability not found" {
+		t.Fatalf("expected shadow-only binding to resolve as not found, got %v", err)
+	}
+}
+
+func TestCapabilityResolverExcludesDisabledBindings(t *testing.T) {
+	resolver := CapabilityResolverImpl{}
+	resolved, err := resolver.Resolve(context.Background(), CapabilityResolutionQuery{
+		CapabilityKey: "erp.receivables",
+		Context:       Context{TenantID: "tn_zuribeans"},
+		Bindings: []CapabilityBinding{
+			{ID: "disabled", CapabilityKey: "erp.receivables", EngineInstanceID: "erp-disabled", BindingMode: "DISABLED", Priority: 1000, Status: "ACTIVE"},
+			{ID: "fallback", CapabilityKey: "erp.receivables", EngineInstanceID: "erp-fallback", BindingMode: "FALLBACK", Priority: 1, Status: "ACTIVE"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve with disabled binding present: %v", err)
+	}
+	if resolved.BindingID != "fallback" {
+		t.Fatalf("expected disabled binding to be excluded entirely, got %#v", resolved)
 	}
 }
 

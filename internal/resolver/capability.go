@@ -59,6 +59,11 @@ func (CapabilityResolverImpl) Resolve(_ context.Context, q CapabilityResolutionQ
 		if b.Status != "ACTIVE" {
 			continue
 		}
+		// DISABLED bindings are excluded from resolution candidates
+		// entirely, not merely deprioritised (domain.BindingModeDisabled).
+		if b.BindingMode == domain.BindingModeDisabled {
+			continue
+		}
 		if !b.EffectiveFrom.IsZero() && at.Before(b.EffectiveFrom) {
 			continue
 		}
@@ -102,10 +107,18 @@ func (CapabilityResolverImpl) Resolve(_ context.Context, q CapabilityResolutionQ
 		return ResolvedCapability{}, errors.New("capability binding is ambiguous")
 	}
 	chosen := active[0]
+	// A SHADOW binding is non-authoritative: even when it wins ranking (no
+	// PRIMARY/FALLBACK/MIGRATION candidate is eligible), it SHALL NOT be
+	// returned as a resolution result -- resolve as if no eligible binding
+	// existed (domain.BindingModeShadow; nabhold/shared's
+	// scope-specificity.yaml "binding mode preference").
+	if chosen.binding.BindingMode == domain.BindingModeShadow {
+		return ResolvedCapability{}, errors.New("capability not found")
+	}
 	return ResolvedCapability{
 		BindingID:        chosen.binding.ID,
 		CapabilityKey:    chosen.binding.CapabilityKey,
-		BindingMode:      chosen.binding.BindingMode,
+		BindingMode:      string(chosen.binding.BindingMode),
 		EngineID:         chosen.binding.EngineID,
 		EngineInstanceID: chosen.binding.EngineInstanceID,
 		ContractVersion:  chosen.binding.ContractVersion,
@@ -113,13 +126,20 @@ func (CapabilityResolverImpl) Resolve(_ context.Context, q CapabilityResolutionQ
 	}, nil
 }
 
-func bindingModeRank(mode string) int {
+// bindingModeRank orders binding modes by resolution preference (highest
+// first): PRIMARY, FALLBACK, SHADOW, MIGRATION -- mirroring nabhold/shared's
+// contracts/capability/v1/scope-specificity.yaml "binding_mode_preference".
+// DISABLED is never ranked: it is filtered out of candidates before this is
+// ever consulted.
+func bindingModeRank(mode domain.BindingMode) int {
 	switch mode {
-	case "PRIMARY":
+	case domain.BindingModePrimary:
+		return 4
+	case domain.BindingModeFallback:
 		return 3
-	case "SECONDARY", "READ_ONLY":
+	case domain.BindingModeShadow:
 		return 2
-	case "FALLBACK":
+	case domain.BindingModeMigration:
 		return 1
 	default:
 		return 0
