@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
@@ -13,13 +14,13 @@ func TestCapabilityExtractionKeepsConsumerContractStable(t *testing.T) {
 	ctx := Context{TenantID: "tn_zuribeans", Environment: "production", DeploymentRegion: "af-south-1", ResolvedAt: now}
 	scope := map[string]domain.MappingScope{"zuribeans-production": {ScopeID: "zuribeans-production", TenantID: "tn_zuribeans", Environment: "production"}}
 
-	before := resolveExtractedCapability(t, ctx, scope, domain.CapabilityBinding{
+	before := resolveExtractedCapability(t, ctx, scope, capabilitydomain.CapabilityBinding{
 		ID: "binding-idempiere", CapabilityKey: "warehouse.execution", EngineID: "idempiere",
 		EngineInstanceID: "ERP-AF-SOUTH-02", ScopeID: "zuribeans-production", BindingMode: "PRIMARY",
 		Priority: 100, Status: "ACTIVE", ContractVersion: "1.0.0", EffectiveFrom: now.Add(-time.Hour),
 	}, domain.EngineInstance{ID: "ERP-AF-SOUTH-02", EngineID: "idempiere", Region: "af-south-1", Environment: "production", Status: "ACTIVE", HealthStatus: "HEALTHY"})
 
-	after := resolveExtractedCapability(t, ctx, scope, domain.CapabilityBinding{
+	after := resolveExtractedCapability(t, ctx, scope, capabilitydomain.CapabilityBinding{
 		ID: "binding-wms", CapabilityKey: "warehouse.execution", EngineID: "wms",
 		EngineInstanceID: "WMS-AF-SOUTH-01", ScopeID: "zuribeans-production", BindingMode: "PRIMARY",
 		Priority: 100, Status: "ACTIVE", ContractVersion: "1.0.0", EffectiveFrom: now,
@@ -33,10 +34,10 @@ func TestCapabilityExtractionKeepsConsumerContractStable(t *testing.T) {
 	}
 }
 
-func resolveExtractedCapability(t *testing.T, ctx Context, scopes map[string]domain.MappingScope, binding domain.CapabilityBinding, instance domain.EngineInstance) ResolvedCapability {
+func resolveExtractedCapability(t *testing.T, ctx Context, scopes map[string]domain.MappingScope, binding capabilitydomain.CapabilityBinding, instance domain.EngineInstance) ResolvedCapability {
 	t.Helper()
 	resolved, err := (CapabilityResolverImpl{}).Resolve(context.Background(), CapabilityResolutionQuery{
-		CapabilityKey: "warehouse.execution", Context: ctx, Bindings: []domain.CapabilityBinding{binding}, Scopes: scopes, At: ctx.ResolvedAt,
+		CapabilityKey: "warehouse.execution", Context: ctx, Bindings: []capabilitydomain.CapabilityBinding{binding}, Scopes: scopes, At: ctx.ResolvedAt,
 	})
 	if err != nil {
 		t.Fatalf("resolve capability: %v", err)

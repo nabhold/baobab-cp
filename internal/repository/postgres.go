@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 	"github.com/nabhold/baobab-cp/internal/resolver"
 )
@@ -808,7 +809,7 @@ func (r *PostgresRepository) ListBindings(ctx context.Context, capabilityKey str
 		); err != nil {
 			return nil, err
 		}
-		b.BindingMode = domain.BindingMode(bindingMode)
+		b.BindingMode = capabilitydomain.BindingMode(bindingMode)
 		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {

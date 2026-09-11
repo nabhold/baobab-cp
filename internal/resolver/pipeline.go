@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
@@ -100,7 +101,7 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		CapabilityKey:    capabilityResult.CapabilityKey,
 		EngineID:         capabilityResult.EngineID,
 		EngineInstanceID: capabilityResult.EngineInstanceID,
-		BindingMode:      domain.BindingMode(capabilityResult.BindingMode),
+		BindingMode:      capabilitydomain.BindingMode(capabilityResult.BindingMode),
 		Status:           "ACTIVE",
 		ContractVersion:  capabilityResult.ContractVersion,
 	})
