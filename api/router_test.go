@@ -51,7 +51,12 @@ func (f *fakeStore) GetTenant(_ context.Context, tenantID string) (domain.Tenant
 		return domain.Tenant{}, f.tenantErr
 	}
 	if f.tenant.TenantID == "" {
-		f.tenant = domain.Tenant{TenantID: tenantID, LegalEntityID: tenantID, DisplayName: "Zuri Beans", IsolationStrategy: "schema_per_tenant", ResidencyRegion: "af-south-1", DesiredState: "active", ObservedState: "ready", Revision: 1}
+		// DesiredState and ObservedState are both real domain.LifecycleStatus
+		// values in production (Store.UpdateTenantLifecycle always sets them
+		// identically) -- "active" here, not the placeholder "ready" this
+		// fixture used before ContextResolutionService started checking
+		// ObservedState for the ADR-BCP-004 §52 "tenant must be active" stage.
+		f.tenant = domain.Tenant{TenantID: tenantID, LegalEntityID: tenantID, DisplayName: "Zuri Beans", IsolationStrategy: "schema_per_tenant", ResidencyRegion: "af-south-1", DesiredState: string(domain.LifecycleActive), ObservedState: string(domain.LifecycleActive), Revision: 1}
 	}
 	return f.tenant, nil
 }

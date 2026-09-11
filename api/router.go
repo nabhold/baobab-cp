@@ -51,6 +51,10 @@ type API struct {
 
 func New(dependencies Dependencies) http.Handler {
 	a := &API{store: dependencies.Store, adminVerifier: dependencies.AdminVerifier, workloadVerifier: dependencies.WorkloadVerifier, resolution: dependencies.Resolution}
+	// ADR-BCP-004 §52: shared by every handler that builds a trusted
+	// Context, so the tenant/legal-entity fail-closed stages apply
+	// uniformly to /v1/resolve and /v1/platform-context/resolve alike.
+	contextResolution := service.ContextResolutionService{Identity: dependencies.Identity, Tenants: dependencies.Store}
 	r := chi.NewRouter()
 	r.Use(a.securityHeaders, a.correlation, a.requestLog)
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -64,12 +68,12 @@ func New(dependencies Dependencies) http.Handler {
 	r.With(a.authorize(a.adminVerifier, "admin", "tenant:write")).Post("/v1/tenants/{tenantID}/decommission", a.tenantLifecycleAction("decommission"))
 	r.With(a.authorize(a.adminVerifier, "admin", "tenant:read")).Get("/v1/entitlements", a.getEntitlement)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/context/resolve", a.resolveContext)
-	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/resolve", ResolverHandler{Service: a.resolution, Identity: dependencies.Identity}.Resolve)
+	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/resolve", ResolverHandler{Service: a.resolution, ContextResolution: contextResolution}.Resolve)
 	// ADR-BCP-004/003 Runtime APIs (issue #74 sub-work item 6), deliberately
 	// on their own paths rather than /v1/context/resolve and /v1/resolve
 	// (which are the pre-existing, differently-shaped endpoints above): see
 	// PlatformContextHandler's doc comment for why.
-	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/platform-context/resolve", PlatformContextHandler{Identity: dependencies.Identity, Contexts: dependencies.Contexts, TTL: dependencies.PlatformContextTTL}.Resolve)
+	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/platform-context/resolve", PlatformContextHandler{ContextResolution: contextResolution, Contexts: dependencies.Contexts, TTL: dependencies.PlatformContextTTL}.Resolve)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/capabilities/resolve", CapabilityResolveHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Resolve)
 	canonical := canonicalHandler{service: dependencies.Canonical}
 	r.With(a.authorize(a.adminVerifier, "admin", "canonical:write")).Post("/v1/canonical-entities", canonical.create)

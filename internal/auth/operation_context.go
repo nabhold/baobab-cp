@@ -56,6 +56,17 @@ func NewOperationContext(parent context.Context, principal Principal, principalI
 	return context.WithValue(parent, operationContextKey{}, resolved), resolved, nil
 }
 
+// WithOperationContext re-attaches an already-resolved Context to parent,
+// exactly as NewOperationContext's own return value does. It exists so a
+// higher layer that -- unlike this package -- may depend on persistence
+// (internal/service.ContextResolutionService, which enriches the Context
+// NewOperationContext produced with an authoritative tenant record's
+// legal_entity_id) can re-propagate an enriched Context without this
+// package needing to know about tenant storage itself.
+func WithOperationContext(parent context.Context, resolved domain.Context) context.Context {
+	return context.WithValue(parent, operationContextKey{}, resolved)
+}
+
 // OperationContextFromContext supports immutable propagation to workers and
 // internal calls. Callers receive a value copy; provenance is copied as well.
 func OperationContextFromContext(ctx context.Context) (domain.Context, bool) {
