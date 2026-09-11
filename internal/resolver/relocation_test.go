@@ -4,12 +4,13 @@ import (
 	"testing"
 	"time"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
 func TestEngineRelocationPreservesCanonicalIdentity(t *testing.T) {
 	cutover := time.Date(2026, time.March, 1, 0, 0, 0, 0, time.UTC)
-	binding := domain.CapabilityBinding{
+	binding := capabilitydomain.CapabilityBinding{
 		ID: "binding-warehouse", CapabilityKey: "warehouse.execution", EngineID: "idempiere",
 		EngineInstanceID: "ERP-AF-SOUTH-01", ScopeID: "tn_zuribeans", BindingMode: "PRIMARY",
 		Status: "ACTIVE", ContractVersion: "1.0.0", EffectiveFrom: cutover.Add(-time.Hour), Version: 7,
@@ -35,7 +36,7 @@ func TestEngineRelocationPreservesCanonicalIdentity(t *testing.T) {
 
 func TestEngineRelocationRejectsDifferentEngineOrFailedTarget(t *testing.T) {
 	cutover := time.Now().UTC()
-	binding := domain.CapabilityBinding{CapabilityKey: "warehouse.execution", EngineInstanceID: "ERP-AF-SOUTH-01"}
+	binding := capabilitydomain.CapabilityBinding{CapabilityKey: "warehouse.execution", EngineInstanceID: "ERP-AF-SOUTH-01"}
 	from := domain.EngineInstance{ID: "ERP-AF-SOUTH-01", EngineID: "idempiere"}
 	for _, target := range []domain.EngineInstance{
 		{ID: "WMS-AF-SOUTH-01", EngineID: "wms", Status: "ACTIVE", HealthStatus: "HEALTHY"},

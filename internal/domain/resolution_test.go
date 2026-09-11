@@ -29,34 +29,6 @@ func TestContextRequiresTrustedAuthoritativeIdentity(t *testing.T) {
 	}
 }
 
-func TestCapabilityKeyIsImplementationNeutral(t *testing.T) {
-	for _, key := range []string{"erp.receivables", "warehouse.execution", "intelligence.supplier-research"} {
-		if err := (Capability{Key: key, Name: key, Status: "ACTIVE"}).Validate(); err != nil {
-			t.Fatalf("valid capability key %q rejected: %v", key, err)
-		}
-	}
-	for _, key := range []string{"idempiere.C_Invoice", "haystack", "baobab_trade"} {
-		if err := (Capability{Key: key, Name: key, Status: "ACTIVE"}).Validate(); err == nil {
-			t.Fatalf("implementation-coupled or non-canonical capability key %q accepted", key)
-		}
-	}
-}
-
-func TestCapabilityBindingRejectsInvalidInterval(t *testing.T) {
-	now := time.Now().UTC()
-	end := now.Add(-time.Minute)
-	binding := CapabilityBinding{
-		CapabilityKey:    "erp.receivables",
-		EngineInstanceID: "0199-erp-instance",
-		ScopeID:          "0199-scope",
-		EffectiveFrom:    now,
-		EffectiveTo:      &end,
-	}
-	if err := binding.Validate(); err == nil {
-		t.Fatal("reversed binding validity interval accepted")
-	}
-}
-
 func TestExternalReferenceRequiresCanonicalAndNativeIdentity(t *testing.T) {
 	reference := ExternalReference{
 		CanonicalEntityID: "0199-canonical-party",

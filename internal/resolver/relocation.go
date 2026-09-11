@@ -4,21 +4,22 @@ import (
 	"errors"
 	"time"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
 // RelocationPlan is an atomic topology transition: the prior binding is
 // closed at CutoverAt and its successor begins at the same instant.
 type RelocationPlan struct {
-	Previous  domain.CapabilityBinding
-	Successor domain.CapabilityBinding
+	Previous  capabilitydomain.CapabilityBinding
+	Successor capabilitydomain.CapabilityBinding
 	CutoverAt time.Time
 }
 
 // PlanEngineRelocation creates a temporally contiguous binding transition.
 // Canonical entities and external references are intentionally absent: an
 // infrastructure move must never rewrite business identity.
-func PlanEngineRelocation(binding domain.CapabilityBinding, from, to domain.EngineInstance, cutover time.Time) (RelocationPlan, error) {
+func PlanEngineRelocation(binding capabilitydomain.CapabilityBinding, from, to domain.EngineInstance, cutover time.Time) (RelocationPlan, error) {
 	if cutover.IsZero() || binding.EngineInstanceID != from.ID || from.EngineID == "" || from.EngineID != to.EngineID {
 		return RelocationPlan{}, errors.New("invalid engine relocation")
 	}
