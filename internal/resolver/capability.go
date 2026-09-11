@@ -88,22 +88,29 @@ func (CapabilityResolverImpl) Resolve(_ context.Context, q CapabilityResolutionQ
 		return ResolvedCapability{}, errors.New("capability not found")
 	}
 
+	// Tie-break order follows nabhold/shared's canonical
+	// contracts/capability/v1/scope-specificity.yaml exactly: specificity,
+	// then binding_mode preference, then explicit priority (ADR-BCP-003
+	// SS16-19's "Priority SHALL NOT casually override scope specificity" and
+	// its recommended evaluation sequence place binding mode ahead of
+	// priority -- priority is an administrative override of last resort
+	// among candidates still tied after mode, never a substitute for it).
 	sort.Slice(active, func(i, j int) bool {
 		if active[i].specificity != active[j].specificity {
 			return active[i].specificity > active[j].specificity
 		}
+		if rankI, rankJ := bindingModeRank(active[i].binding.BindingMode), bindingModeRank(active[j].binding.BindingMode); rankI != rankJ {
+			return rankI > rankJ
+		}
 		if active[i].binding.Priority != active[j].binding.Priority {
 			return active[i].binding.Priority > active[j].binding.Priority
-		}
-		if active[i].binding.BindingMode != active[j].binding.BindingMode {
-			return bindingModeRank(active[i].binding.BindingMode) > bindingModeRank(active[j].binding.BindingMode)
 		}
 		return active[i].binding.ID < active[j].binding.ID
 	})
 
 	if len(active) > 1 && active[0].specificity == active[1].specificity &&
-		active[0].binding.Priority == active[1].binding.Priority &&
-		bindingModeRank(active[0].binding.BindingMode) == bindingModeRank(active[1].binding.BindingMode) {
+		bindingModeRank(active[0].binding.BindingMode) == bindingModeRank(active[1].binding.BindingMode) &&
+		active[0].binding.Priority == active[1].binding.Priority {
 		return ResolvedCapability{}, errors.New("capability binding is ambiguous")
 	}
 	chosen := active[0]
