@@ -158,15 +158,15 @@ func (m BindingMode) Valid() bool {
 // entirely absent from this codebase during the Capability Platform
 // Phase-0 audit -- this is net-new, not a remodel of an existing type.
 type CapabilityProvider struct {
-	ID          string         `json:"id,omitempty"`
-	ProviderKey string         `json:"provider_key"`
-	Name        string         `json:"name"`
-	ProviderType string        `json:"provider_type"`
-	EngineID    string         `json:"engine_id"`
-	Status      string         `json:"status"`
-	Ownership   string         `json:"ownership,omitempty"`
-	Metadata    map[string]any `json:"metadata,omitempty"`
-	Version     int64          `json:"version,omitempty"`
+	ID           string         `json:"id,omitempty"`
+	ProviderKey  string         `json:"provider_key"`
+	Name         string         `json:"name"`
+	ProviderType string         `json:"provider_type"`
+	EngineID     string         `json:"engine_id"`
+	Status       string         `json:"status"`
+	Ownership    string         `json:"ownership,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	Version      int64          `json:"version,omitempty"`
 }
 
 var providerKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$`)
