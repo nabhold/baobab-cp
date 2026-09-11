@@ -22,19 +22,196 @@ import (
 
 var capabilityKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$`)
 
+// CapabilityLifecycle is a Capability's (or CapabilityProvider's, or
+// CapabilityBinding's) operational lifecycle -- distinct from maturity: a
+// capability can be maturity=SUPPORTED and lifecycle=SUSPENDED
+// simultaneously (ADR-BCP-003 §6, mirrored in nabhold/shared's
+// contracts/capability/v1/domain.schema.json #/$defs/capabilityLifecycle).
+type CapabilityLifecycle string
+
+const (
+	CapabilityLifecycleDraft      CapabilityLifecycle = "DRAFT"
+	CapabilityLifecycleActive     CapabilityLifecycle = "ACTIVE"
+	CapabilityLifecycleSuspended  CapabilityLifecycle = "SUSPENDED"
+	CapabilityLifecycleDeprecated CapabilityLifecycle = "DEPRECATED"
+	CapabilityLifecycleRetired    CapabilityLifecycle = "RETIRED"
+)
+
+func (l CapabilityLifecycle) Valid() bool {
+	switch l {
+	case CapabilityLifecycleDraft, CapabilityLifecycleActive, CapabilityLifecycleSuspended, CapabilityLifecycleDeprecated, CapabilityLifecycleRetired:
+		return true
+	default:
+		return false
+	}
+}
+
+// CapabilityMaturity is the confidence/support level of a Capability's
+// contract and implementation -- distinct from lifecycle (ADR-BCP-003 §7).
+type CapabilityMaturity string
+
+const (
+	CapabilityMaturityExperimental CapabilityMaturity = "EXPERIMENTAL"
+	CapabilityMaturityPreview      CapabilityMaturity = "PREVIEW"
+	CapabilityMaturitySupported    CapabilityMaturity = "SUPPORTED"
+	CapabilityMaturityDeprecated   CapabilityMaturity = "DEPRECATED"
+	CapabilityMaturityRetired      CapabilityMaturity = "RETIRED"
+)
+
+func (m CapabilityMaturity) Valid() bool {
+	switch m {
+	case CapabilityMaturityExperimental, CapabilityMaturityPreview, CapabilityMaturitySupported, CapabilityMaturityDeprecated, CapabilityMaturityRetired:
+		return true
+	default:
+		return false
+	}
+}
+
 type Capability struct {
-	ID          string `json:"id,omitempty"`
-	Key         string `json:"capability_key"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Status      string `json:"status"`
+	ID          string              `json:"id,omitempty"`
+	Key         string              `json:"capability_key"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	DomainKey   string              `json:"domain"`
+	Lifecycle   CapabilityLifecycle `json:"lifecycle"`
+	Maturity    CapabilityMaturity  `json:"maturity"`
+	Version     int64               `json:"version,omitempty"`
 }
 
 func (c Capability) Validate() error {
 	if !capabilityKeyPattern.MatchString(c.Key) || strings.TrimSpace(c.Name) == "" {
 		return errors.New("capability requires an implementation-neutral key and name")
 	}
+	if strings.TrimSpace(c.DomainKey) == "" {
+		return errors.New("domain is required")
+	}
+	if !c.Lifecycle.Valid() {
+		return errors.New("lifecycle must be one of DRAFT, ACTIVE, SUSPENDED, DEPRECATED, RETIRED")
+	}
+	if !c.Maturity.Valid() {
+		return errors.New("maturity must be one of EXPERIMENTAL, PREVIEW, SUPPORTED, DEPRECATED, RETIRED")
+	}
 	return nil
+}
+
+// IsResolvable reports whether a capability in this lifecycle state SHALL
+// resolve at all (ADR-BCP-003 §6's default eligibility matrix): ACTIVE
+// always does, DRAFT/SUSPENDED/RETIRED never do. §6 allows DEPRECATED
+// "where policy allows", but no governed platform policy mechanism exists
+// yet to grant that allowance -- so DEPRECATED fails closed (denied) here,
+// consistent with this codebase's standing default of failing closed
+// wherever a policy hook is not yet implemented (e.g. cache fail-safe,
+// ambiguous binding resolution). This is expected to become configurable,
+// not to stay hardcoded, once governed platform policy exists.
+func (c Capability) IsResolvable() bool {
+	return c.Lifecycle == CapabilityLifecycleActive
+}
+
+// DependencyType is whether a depended-upon capability must, may, or
+// conditionally must be satisfied (ADR-BCP-003 §8, mirrored in
+// nabhold/shared's domain.schema.json #/$defs/capabilityDependencyType).
+type DependencyType string
+
+const (
+	DependencyTypeRequired    DependencyType = "REQUIRED"
+	DependencyTypeOptional    DependencyType = "OPTIONAL"
+	DependencyTypeConditional DependencyType = "CONDITIONAL"
+)
+
+func (t DependencyType) Valid() bool {
+	switch t {
+	case DependencyTypeRequired, DependencyTypeOptional, DependencyTypeConditional:
+		return true
+	default:
+		return false
+	}
+}
+
+// CapabilityDependency declares that one capability depends on another.
+// Mirrors nabhold/shared's contracts/capability/v1/capability.schema.json
+// #/$defs/capabilityDependency (CapabilityKey/DependencyType/
+// VersionConstraint/Condition), plus the owning-capability identity a
+// persisted runtime edge needs that the wire-embedded contract shape does
+// not (ADR-BCP-003 §51 lists capability.capability_dependency as its own
+// persisted table, not merely a nested array on the wire document).
+type CapabilityDependency struct {
+	ID                  string         `json:"id,omitempty"`
+	CapabilityID        string         `json:"capability_id,omitempty"`
+	CapabilityKey       string         `json:"capability_key,omitempty"`
+	DependsOnCapability string         `json:"depends_on_capability_key"`
+	DependencyType      DependencyType `json:"dependency_type"`
+	VersionConstraint   string         `json:"version_constraint,omitempty"`
+	Condition           string         `json:"condition,omitempty"`
+	Status              string         `json:"status,omitempty"`
+}
+
+func (d CapabilityDependency) Validate() error {
+	if d.CapabilityID == "" && d.CapabilityKey == "" {
+		return errors.New("owning capability identity is required")
+	}
+	if strings.TrimSpace(d.DependsOnCapability) == "" {
+		return errors.New("depends_on_capability_key is required")
+	}
+	if d.CapabilityKey != "" && d.CapabilityKey == d.DependsOnCapability {
+		return errors.New("a capability cannot depend on itself")
+	}
+	if !d.DependencyType.Valid() {
+		return errors.New("dependency_type must be one of REQUIRED, OPTIONAL, CONDITIONAL")
+	}
+	// Mirrors shared's if/then: a CONDITIONAL dependency must always carry
+	// a machine-evaluable condition; it is never expressed only in prose.
+	if d.DependencyType == DependencyTypeConditional && strings.TrimSpace(d.Condition) == "" {
+		return errors.New("condition is required when dependency_type is CONDITIONAL")
+	}
+	return nil
+}
+
+// HasCapabilityDependencyCycle reports whether the REQUIRED-only subgraph
+// of dependencies contains a cycle. ADR-BCP-003 §8: "Required dependency
+// graphs SHALL be acyclic." OPTIONAL and CONDITIONAL edges are excluded
+// deliberately -- the ADR's acyclic requirement is scoped to REQUIRED
+// dependencies, since an optional or conditional edge can never force an
+// unsatisfiable resolution the way a required cycle would.
+func HasCapabilityDependencyCycle(dependencies []CapabilityDependency) bool {
+	edges := make(map[string][]string)
+	for _, d := range dependencies {
+		if d.DependencyType != DependencyTypeRequired || d.CapabilityKey == "" {
+			continue
+		}
+		edges[d.CapabilityKey] = append(edges[d.CapabilityKey], d.DependsOnCapability)
+	}
+
+	const (
+		unvisited = 0
+		visiting  = 1
+		done      = 2
+	)
+	state := make(map[string]int)
+
+	var visit func(node string) bool
+	visit = func(node string) bool {
+		switch state[node] {
+		case visiting:
+			return true
+		case done:
+			return false
+		}
+		state[node] = visiting
+		for _, next := range edges[node] {
+			if visit(next) {
+				return true
+			}
+		}
+		state[node] = done
+		return false
+	}
+
+	for node := range edges {
+		if state[node] == unvisited && visit(node) {
+			return true
+		}
+	}
+	return false
 }
 
 // BindingMode is the canonical, closed set of CapabilityBinding modes
