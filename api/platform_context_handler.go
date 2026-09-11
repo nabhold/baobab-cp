@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -23,8 +24,8 @@ import (
 // nabhold/shared's resolutionRequest contract requiring a pre-resolved
 // context_id rather than an inline context.
 type PlatformContextHandler struct {
-	Identity service.IdentityService
-	Contexts repository.ContextWriter
+	ContextResolution service.ContextResolutionService
+	Contexts          repository.ContextWriter
 	// TTL bounds the persisted context's lifetime (ADR-BCP-004 §72). Zero
 	// (the default) leaves it unbounded, mirroring resolver.
 	// ResolutionEvidence.TTL's identical zero-value semantics.
@@ -48,17 +49,19 @@ func (h PlatformContextHandler) Resolve(w http.ResponseWriter, r *http.Request) 
 		problem(w, r, http.StatusUnauthorized, "AUTH_TOKEN_REQUIRED", "verified workload identity is required", false)
 		return
 	}
-	// ADR-0004 §11/§39: resolve the verified (issuer, subject) to a durable
-	// canonical Principal before any business-domain operation proceeds,
-	// mirroring ResolverHandler.Resolve's identical identity-resolution step.
-	resolvedPrincipal, err := h.Identity.Resolve(r.Context(), principal.Issuer, principal.Subject, principal.ActorType)
+	// ADR-BCP-004 §52: resolve identity -> resolve tenant -> validate
+	// principal<->tenant relationship -> resolve legal entity, all fail
+	// closed, mirroring ResolverHandler.Resolve's identical step.
+	_, trustedContext, err := h.ContextResolution.Resolve(r.Context(), principal, correlationID(r), time.Now())
 	if err != nil {
-		problem(w, r, http.StatusForbidden, "IDENTITY_RESOLUTION_FAILED", "the authenticated identity could not be resolved", false)
-		return
-	}
-	_, trustedContext, err := auth.NewOperationContext(r.Context(), principal, resolvedPrincipal.ID, correlationID(r), time.Now())
-	if err != nil {
-		problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
+		switch {
+		case errors.Is(err, service.ErrIdentityResolutionFailed):
+			problem(w, r, http.StatusForbidden, "IDENTITY_RESOLUTION_FAILED", "the authenticated identity could not be resolved", false)
+		case errors.Is(err, service.ErrTenantNotActive):
+			problem(w, r, http.StatusForbidden, "TENANT_NOT_ACTIVE", "the tenant is not active", false)
+		default:
+			problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
+		}
 		return
 	}
 	if h.TTL > 0 {

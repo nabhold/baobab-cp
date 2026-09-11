@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -11,8 +12,8 @@ import (
 
 // ResolverHandler exposes the composed resolution service over HTTP.
 type ResolverHandler struct {
-	Service  service.ResolutionService
-	Identity service.IdentityService
+	Service           service.ResolutionService
+	ContextResolution service.ContextResolutionService
 }
 
 type resolverRequest struct {
@@ -52,17 +53,19 @@ func (h ResolverHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		problem(w, r, http.StatusBadRequest, "INVALID_REQUEST", "canonical_entity_id is required", false)
 		return
 	}
-	// ADR-0004 §11/§39: resolve the verified (issuer, subject) to a durable
-	// canonical Principal before any business-domain operation proceeds --
-	// Gate IAM-3 phase 4. Token-derived, not caller-submitted, per §39.
-	resolvedPrincipal, err := h.Identity.Resolve(r.Context(), principal.Issuer, principal.Subject, principal.ActorType)
+	// ADR-BCP-004 §52: resolve identity -> resolve tenant -> validate
+	// principal<->tenant relationship -> resolve legal entity, all fail
+	// closed.
+	operationCtx, trustedContext, err := h.ContextResolution.Resolve(r.Context(), principal, correlationID(r), time.Now())
 	if err != nil {
-		problem(w, r, http.StatusForbidden, "IDENTITY_RESOLUTION_FAILED", "the authenticated identity could not be resolved", false)
-		return
-	}
-	operationCtx, trustedContext, err := auth.NewOperationContext(r.Context(), principal, resolvedPrincipal.ID, correlationID(r), time.Now())
-	if err != nil {
-		problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
+		switch {
+		case errors.Is(err, service.ErrIdentityResolutionFailed):
+			problem(w, r, http.StatusForbidden, "IDENTITY_RESOLUTION_FAILED", "the authenticated identity could not be resolved", false)
+		case errors.Is(err, service.ErrTenantNotActive):
+			problem(w, r, http.StatusForbidden, "TENANT_NOT_ACTIVE", "the tenant is not active", false)
+		default:
+			problem(w, r, http.StatusForbidden, "CONTEXT_DENIED", "trusted Context could not be constructed", false)
+		}
 		return
 	}
 	r = r.WithContext(operationCtx)

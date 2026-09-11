@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nabhold/baobab-cp/internal/auth"
+	"github.com/nabhold/baobab-cp/internal/domain"
 	"github.com/nabhold/baobab-cp/internal/repository"
 	"github.com/nabhold/baobab-cp/internal/service"
 )
@@ -17,7 +18,10 @@ import (
 func TestPlatformContextHandlerResolvesAndPersistsContext(t *testing.T) {
 	repo := repository.NewInMemoryRepository()
 	handler := PlatformContextHandler{
-		Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{},
+		},
 		Contexts: repo,
 		TTL:      5 * time.Minute,
 	}
@@ -71,7 +75,10 @@ func TestPlatformContextHandlerRejectsUnresolvableIdentity(t *testing.T) {
 	repo := repository.NewInMemoryRepository()
 	// No Provision policy set: IdentityService fails closed on an unknown
 	// principal, mirroring TestResolverHandlerRejectsUnresolvableIdentity.
-	handler := PlatformContextHandler{Identity: service.IdentityService{Repository: repo}, Contexts: repo}
+	handler := PlatformContextHandler{
+		ContextResolution: service.ContextResolutionService{Identity: service.IdentityService{Repository: repo}, Tenants: &fakeStore{}},
+		Contexts:          repo,
+	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
 	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
 	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
@@ -86,7 +93,10 @@ func TestPlatformContextHandlerRejectsUnresolvableIdentity(t *testing.T) {
 func TestPlatformContextHandlerFailsClosedWhenContextStoreUnavailable(t *testing.T) {
 	repo := repository.NewInMemoryRepository()
 	handler := PlatformContextHandler{
-		Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{},
+		},
 		// Contexts intentionally left nil.
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
@@ -98,5 +108,29 @@ func TestPlatformContextHandlerFailsClosedWhenContextStoreUnavailable(t *testing
 	handler.Resolve(w, req)
 	if w.Code != http.StatusServiceUnavailable || !bytes.Contains(w.Body.Bytes(), []byte("CONTEXT_STORE_UNAVAILABLE")) {
 		t.Fatalf("expected fail-closed 503, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestPlatformContextHandlerRejectsInactiveTenant is PlatformContextHandler's
+// counterpart to TestResolverHandlerRejectsInactiveTenant.
+func TestPlatformContextHandlerRejectsInactiveTenant(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	decommissioned := domain.Tenant{TenantID: "tenant-123", LegalEntityID: "THAMANI-GLOBAL", ObservedState: string(domain.LifecycleDecommissioned)}
+	handler := PlatformContextHandler{
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{tenant: decommissioned},
+		},
+		Contexts: repo,
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000004")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("TENANT_NOT_ACTIVE")) {
+		t.Fatalf("expected a decommissioned tenant to be rejected, got %d body=%s", w.Code, w.Body.String())
 	}
 }

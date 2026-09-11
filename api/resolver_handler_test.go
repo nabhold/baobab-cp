@@ -138,8 +138,11 @@ func TestResolverHandlerDoesNotLeakInternalDenialReason(t *testing.T) {
 	// such as "mapping not found". The client must see a fixed, opaque
 	// message instead, mirroring resolveContext's ErrContextDenied handling.
 	handler := ResolverHandler{
-		Service:  service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
-		Identity: service.IdentityService{Repository: repository.NewInMemoryRepository(), Provision: service.WorkloadOnlyProvisioningPolicy},
+		Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repository.NewInMemoryRepository(), Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{},
+		},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
 	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
@@ -189,8 +192,11 @@ func TestResolverHandlerRejectsMissingCanonicalEntityID(t *testing.T) {
 // pipeline at all.
 func TestResolverHandlerRejectsUnresolvableIdentity(t *testing.T) {
 	handler := ResolverHandler{
-		Service:  service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
-		Identity: service.IdentityService{Repository: repository.NewInMemoryRepository()},
+		Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repository.NewInMemoryRepository()},
+			Tenants:  &fakeStore{},
+		},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
 	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
@@ -200,6 +206,33 @@ func TestResolverHandlerRejectsUnresolvableIdentity(t *testing.T) {
 	handler.Resolve(w, req)
 	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("IDENTITY_RESOLUTION_FAILED")) {
 		t.Fatalf("expected unresolvable identity rejection, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestResolverHandlerRejectsInactiveTenant is a regression test for
+// ADR-BCP-004 §52/§53: before ContextResolutionService existed, the trusted
+// Context this handler built never looked up the tenant record at all, so a
+// workload token for a suspended or decommissioned tenant could still
+// successfully resolve.
+func TestResolverHandlerRejectsInactiveTenant(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	suspended := domain.Tenant{TenantID: "tenant-123", LegalEntityID: "THAMANI-GLOBAL", ObservedState: string(domain.LifecycleSuspended)}
+	handler := ResolverHandler{
+		Service: service.ResolutionService{Pipeline: resolver.ResolutionPipeline{}},
+		ContextResolution: service.ContextResolutionService{
+			Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+			Tenants:  &fakeStore{tenant: suspended},
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/resolve", bytes.NewReader([]byte(`{"tenant_id":"tenant-123","canonical_entity_id":"entity-abc"}`)))
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000005")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("TENANT_NOT_ACTIVE")) {
+		t.Fatalf("expected a suspended tenant to be rejected, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
