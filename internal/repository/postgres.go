@@ -44,6 +44,9 @@ var _ MappingWriter = (*PostgresRepository)(nil)
 var _ CapabilityWriter = (*PostgresRepository)(nil)
 var _ CanonicalEntityRepository = (*PostgresRepository)(nil)
 var _ MappingScopeWriter = (*PostgresRepository)(nil)
+var _ CapabilityScopeWriter = (*PostgresRepository)(nil)
+var _ CapabilityGrantRepository = (*PostgresRepository)(nil)
+var _ CapabilityGrantWriter = (*PostgresRepository)(nil)
 var _ IdentityRepository = (*PostgresRepository)(nil)
 var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
 var _ IdentityLinkingRepository = (*PostgresRepository)(nil)
@@ -879,6 +882,208 @@ func (r *PostgresRepository) ListActiveInstances(ctx context.Context, engineID s
 		return nil, err
 	}
 	return out, nil
+}
+
+func (r *PostgresRepository) CreateCapabilityScope(ctx context.Context, scope capabilitydomain.CapabilityScope) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := scope.Validate(); err != nil {
+		return fmt.Errorf("validate capability scope: %w", err)
+	}
+	metadata, err := json.Marshal(scope.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal capability scope metadata: %w", err)
+	}
+	_, err = r.pool.Exec(ctx, `
+		INSERT INTO capability.capability_scope(
+			scope_id, tenant_id, legal_entity_id, organisation_id, business_unit_id,
+			digital_estate_id, digital_property_id, channel_id, market_id, jurisdiction,
+			currency_code, customer_segment_id, catalogue_id, operating_region_id, geographic_region_id,
+			deployment_region, environment, isolation_profile_id, include_countries, exclude_countries, metadata
+		)
+		VALUES (
+			$1::uuid, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''),
+			NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''),
+			NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''),
+			NULLIF($16, ''), NULLIF($17, ''), NULLIF($18, '')::uuid, $19, $20, $21
+		)`,
+		scope.ScopeID, scope.TenantID, scope.LegalEntityID, scope.OrganisationID, scope.BusinessUnitID,
+		scope.DigitalEstateID, scope.DigitalPropertyID, scope.ChannelID, scope.MarketID, scope.Jurisdiction,
+		scope.CurrencyCode, scope.CustomerSegmentID, scope.CatalogueID, scope.OperatingRegionID, scope.GeographicRegionID,
+		scope.DeploymentRegion, scope.Environment, scope.IsolationProfileID, scope.IncludeCountries, scope.ExcludeCountries, metadata,
+	)
+	return err
+}
+
+const capabilityScopeSelectColumns = `
+	scope_id::text, tenant_id, COALESCE(legal_entity_id, ''), COALESCE(organisation_id, ''), COALESCE(business_unit_id, ''),
+	COALESCE(digital_estate_id, ''), COALESCE(digital_property_id, ''), COALESCE(channel_id, ''), COALESCE(market_id, ''), COALESCE(jurisdiction, ''),
+	COALESCE(currency_code, ''), COALESCE(customer_segment_id, ''), COALESCE(catalogue_id, ''), COALESCE(operating_region_id, ''), COALESCE(geographic_region_id, ''),
+	COALESCE(deployment_region, ''), COALESCE(environment, ''), COALESCE(isolation_profile_id::text, ''), include_countries, exclude_countries, metadata,
+	created_at, updated_at`
+
+func scanCapabilityScope(row interface {
+	Scan(dest ...any) error
+}) (capabilitydomain.CapabilityScope, error) {
+	var s capabilitydomain.CapabilityScope
+	var metadata []byte
+	var createdAt, updatedAt time.Time
+	err := row.Scan(
+		&s.ScopeID, &s.TenantID, &s.LegalEntityID, &s.OrganisationID, &s.BusinessUnitID,
+		&s.DigitalEstateID, &s.DigitalPropertyID, &s.ChannelID, &s.MarketID, &s.Jurisdiction,
+		&s.CurrencyCode, &s.CustomerSegmentID, &s.CatalogueID, &s.OperatingRegionID, &s.GeographicRegionID,
+		&s.DeploymentRegion, &s.Environment, &s.IsolationProfileID, &s.IncludeCountries, &s.ExcludeCountries, &metadata,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return capabilitydomain.CapabilityScope{}, err
+	}
+	if len(metadata) > 0 {
+		if err := json.Unmarshal(metadata, &s.Metadata); err != nil {
+			return capabilitydomain.CapabilityScope{}, fmt.Errorf("unmarshal capability scope metadata: %w", err)
+		}
+	}
+	s.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	s.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	return s, nil
+}
+
+func (r *PostgresRepository) GetCapabilityScope(ctx context.Context, scopeID string) (capabilitydomain.CapabilityScope, error) {
+	if r == nil || r.pool == nil {
+		return capabilitydomain.CapabilityScope{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `SELECT `+capabilityScopeSelectColumns+` FROM capability.capability_scope WHERE scope_id=$1::uuid`, scopeID)
+	scope, err := scanCapabilityScope(row)
+	if err != nil {
+		return capabilitydomain.CapabilityScope{}, fmt.Errorf("get capability scope %s: %w", scopeID, err)
+	}
+	return scope, nil
+}
+
+func (r *PostgresRepository) ListCapabilityScopes(ctx context.Context, tenantID string) ([]capabilitydomain.CapabilityScope, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+capabilityScopeSelectColumns+` FROM capability.capability_scope WHERE tenant_id=$1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []capabilitydomain.CapabilityScope
+	for rows.Next() {
+		scope, err := scanCapabilityScope(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, scope)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateGrant resolves capability_id from the caller's CapabilityKey via
+// capability.capability.code, mirroring CreateBinding's join pattern.
+// Unlike CreateBinding, this checks RowsAffected: an unknown capability_key
+// SHALL fail explicitly rather than silently insert nothing.
+func (r *PostgresRepository) CreateGrant(ctx context.Context, grant capabilitydomain.CapabilityGrant) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := grant.Validate(); err != nil {
+		return fmt.Errorf("validate capability grant: %w", err)
+	}
+	constraints, err := json.Marshal(grant.Constraints)
+	if err != nil {
+		return fmt.Errorf("marshal capability grant constraints: %w", err)
+	}
+	result, err := r.pool.Exec(ctx, `
+		INSERT INTO capability.capability_grant(grant_id, tenant_id, capability_id, scope_id, source, source_reference, status, effective_from, effective_to, constraints, granted_by)
+		SELECT $1::uuid, $2, c.capability_id, $4::uuid, $5, NULLIF($6, ''), $7, $8, $9, $10, NULLIF($11, '')
+		FROM capability.capability c
+		WHERE c.code = $3`,
+		grant.ID, grant.TenantID, grant.CapabilityKey, grant.ScopeID, string(grant.Source),
+		grant.SourceReference, string(grant.Status), grant.EffectiveFrom, grant.EffectiveTo, constraints, grant.GrantedBy,
+	)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("capability %q not found", grant.CapabilityKey)
+	}
+	return nil
+}
+
+func (r *PostgresRepository) ListGrants(ctx context.Context, tenantID, capabilityKey string) ([]capabilitydomain.CapabilityGrant, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			cg.grant_id::text, cg.tenant_id, cap.code, cg.scope_id::text,
+			cg.source, COALESCE(cg.source_reference, ''), cg.status,
+			cg.effective_from, cg.effective_to, cg.constraints,
+			COALESCE(cg.granted_by, ''), cg.revoked_at, COALESCE(cg.revoked_by, ''), COALESCE(cg.revocation_reason, ''),
+			cg.version
+		FROM capability.capability_grant cg
+		JOIN capability.capability cap ON cap.capability_id = cg.capability_id
+		WHERE cg.tenant_id = $1 AND cap.code = $2
+		ORDER BY cg.created_at DESC`, tenantID, capabilityKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []capabilitydomain.CapabilityGrant
+	for rows.Next() {
+		var g capabilitydomain.CapabilityGrant
+		var source, status string
+		var constraints []byte
+		if err := rows.Scan(
+			&g.ID, &g.TenantID, &g.CapabilityKey, &g.ScopeID,
+			&source, &g.SourceReference, &status,
+			&g.EffectiveFrom, &g.EffectiveTo, &constraints,
+			&g.GrantedBy, &g.RevokedAt, &g.RevokedBy, &g.RevocationReason,
+			&g.Version,
+		); err != nil {
+			return nil, err
+		}
+		g.Source = capabilitydomain.GrantSource(source)
+		g.Status = capabilitydomain.GrantStatus(status)
+		if len(constraints) > 0 {
+			if err := json.Unmarshal(constraints, &g.Constraints); err != nil {
+				return nil, fmt.Errorf("unmarshal capability grant constraints: %w", err)
+			}
+		}
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// RevokeGrant never deletes the row -- a revoked grant SHALL remain
+// historically queryable (§12).
+func (r *PostgresRepository) RevokeGrant(ctx context.Context, grantID, revokedBy, reason string, expectedVersion int64) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	result, err := r.pool.Exec(ctx, `
+		UPDATE capability.capability_grant
+		SET status='REVOKED', revoked_at=now(), revoked_by=NULLIF($2, ''), revocation_reason=NULLIF($3, ''), version=version+1, updated_at=now()
+		WHERE grant_id=$1::uuid AND version=$4`,
+		grantID, revokedBy, reason, expectedVersion)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return fmt.Errorf("capability grant %s version conflict or not found", grantID)
+	}
+	return nil
 }
 
 func (r *PostgresRepository) Ping(ctx context.Context) error {
