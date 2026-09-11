@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 	"github.com/nabhold/baobab-cp/internal/resolver"
 )
@@ -565,5 +566,53 @@ func TestInMemoryRepositoryMergeRejectsAlreadyArchivedPrincipal(t *testing.T) {
 	}
 	if err := repo.MergePrincipalsAudited(ctx, c.ID, a.ID, actor, "archived target"); !errors.Is(err, ErrMergeNotEligible) {
 		t.Fatalf("expected ErrMergeNotEligible for an archived target, got %v", err)
+	}
+}
+
+func TestInMemoryRepositoryCapabilityRegistry(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	capA := capabilitydomain.Capability{Key: "commerce.order.create", Name: "Order Create", DomainKey: "commerce", Lifecycle: capabilitydomain.CapabilityLifecycleActive, Maturity: capabilitydomain.CapabilityMaturitySupported}
+	capB := capabilitydomain.Capability{Key: "finance.invoice.issue", Name: "Invoice Issue", DomainKey: "finance", Lifecycle: capabilitydomain.CapabilityLifecycleActive, Maturity: capabilitydomain.CapabilityMaturitySupported}
+	if err := repo.CreateCapability(ctx, capA); err != nil {
+		t.Fatalf("create capability failed: %v", err)
+	}
+	if err := repo.CreateCapability(ctx, capA); err == nil {
+		t.Fatal("expected duplicate capability to be rejected")
+	}
+	if err := repo.CreateCapability(ctx, capB); err != nil {
+		t.Fatalf("create second capability failed: %v", err)
+	}
+
+	fetched, err := repo.GetCapability(ctx, "commerce.order.create")
+	if err != nil {
+		t.Fatalf("get capability failed: %v", err)
+	}
+	if fetched.DomainKey != "commerce" || !fetched.IsResolvable() {
+		t.Fatalf("unexpected fetched capability: %+v", fetched)
+	}
+	if _, err := repo.GetCapability(ctx, "missing.capability"); err == nil {
+		t.Fatal("expected missing capability lookup to fail")
+	}
+
+	required := capabilitydomain.CapabilityDependency{CapabilityKey: "commerce.order.create", DependsOnCapability: "finance.invoice.issue", DependencyType: capabilitydomain.DependencyTypeRequired}
+	if err := repo.CreateCapabilityDependency(ctx, required); err != nil {
+		t.Fatalf("create dependency failed: %v", err)
+	}
+
+	// The reverse edge as REQUIRED would close a two-capability cycle --
+	// the whole-graph check must reject it, not merely a single-edge check.
+	reverse := capabilitydomain.CapabilityDependency{CapabilityKey: "finance.invoice.issue", DependsOnCapability: "commerce.order.create", DependencyType: capabilitydomain.DependencyTypeRequired}
+	if err := repo.CreateCapabilityDependency(ctx, reverse); err == nil {
+		t.Fatal("expected a two-capability REQUIRED cycle to be rejected")
+	}
+
+	deps, err := repo.ListCapabilityDependencies(ctx, "commerce.order.create")
+	if err != nil {
+		t.Fatalf("list dependencies failed: %v", err)
+	}
+	if len(deps) != 1 || deps[0].DependsOnCapability != "finance.invoice.issue" {
+		t.Fatalf("expected exactly one dependency, got %+v", deps)
 	}
 }

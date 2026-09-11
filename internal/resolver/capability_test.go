@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
@@ -61,6 +62,48 @@ func TestCapabilityResolverBindingModePrecedesPriority(t *testing.T) {
 	}
 	if resolved.BindingID != "primary" {
 		t.Fatalf("expected the PRIMARY binding to win over a higher-priority FALLBACK, got %#v", resolved)
+	}
+}
+
+func TestCapabilityResolverSkipsEligibilityGateWhenCapabilityNil(t *testing.T) {
+	resolver := CapabilityResolverImpl{}
+	_, err := resolver.Resolve(context.Background(), CapabilityResolutionQuery{
+		CapabilityKey: "baobab_trade",
+		Context:       Context{TenantID: "tenant-123"},
+		Bindings: []CapabilityBinding{
+			{CapabilityKey: "baobab_trade", EngineID: "engine-1", EngineInstanceID: "instance-1", BindingMode: "PRIMARY", Status: "ACTIVE", ContractVersion: "v1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected nil Capability to skip the eligibility gate, got: %v", err)
+	}
+}
+
+func TestCapabilityResolverEnforcesLifecycleEligibilityWhenCapabilityPopulated(t *testing.T) {
+	resolver := CapabilityResolverImpl{}
+	bindings := []CapabilityBinding{
+		{CapabilityKey: "baobab_trade", EngineID: "engine-1", EngineInstanceID: "instance-1", BindingMode: "PRIMARY", Status: "ACTIVE", ContractVersion: "v1"},
+	}
+	suspended := capabilitydomain.Capability{Key: "baobab_trade", Lifecycle: capabilitydomain.CapabilityLifecycleSuspended}
+	_, err := resolver.Resolve(context.Background(), CapabilityResolutionQuery{
+		CapabilityKey: "baobab_trade",
+		Context:       Context{TenantID: "tenant-123"},
+		Bindings:      bindings,
+		Capability:    &suspended,
+	})
+	if err == nil {
+		t.Fatal("expected a SUSPENDED capability to fail resolution closed")
+	}
+
+	active := capabilitydomain.Capability{Key: "baobab_trade", Lifecycle: capabilitydomain.CapabilityLifecycleActive}
+	_, err = resolver.Resolve(context.Background(), CapabilityResolutionQuery{
+		CapabilityKey: "baobab_trade",
+		Context:       Context{TenantID: "tenant-123"},
+		Bindings:      bindings,
+		Capability:    &active,
+	})
+	if err != nil {
+		t.Fatalf("expected an ACTIVE capability to resolve, got: %v", err)
 	}
 }
 

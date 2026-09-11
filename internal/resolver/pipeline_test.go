@@ -225,3 +225,19 @@ func TestResolutionPipelineRoutesThroughEffectiveGrant(t *testing.T) {
 		t.Fatalf("expected trace to cite the satisfying grant, got %#v", result.Trace)
 	}
 }
+
+func TestResolutionPipelineEnforcesCapabilityLifecycleWhenPopulated(t *testing.T) {
+	pipeline := ResolutionPipeline{}
+	req := baseSuccessfulRequest()
+	suspended := capabilitydomain.Capability{Key: "baobab_trade", Lifecycle: capabilitydomain.CapabilityLifecycleSuspended}
+	req.Capability = &suspended
+	if _, err := pipeline.Resolve(context.Background(), req); err == nil {
+		t.Fatal("expected a SUSPENDED capability to fail resolution closed")
+	}
+
+	active := capabilitydomain.Capability{Key: "baobab_trade", Lifecycle: capabilitydomain.CapabilityLifecycleActive}
+	req.Capability = &active
+	if _, err := pipeline.Resolve(context.Background(), req); err != nil {
+		t.Fatalf("expected an ACTIVE capability to resolve, got: %v", err)
+	}
+}

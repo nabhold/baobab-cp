@@ -34,6 +34,10 @@ type ResolutionRequest struct {
 	// opt into real enforcement once grant data exists for it.
 	Grants []capabilitydomain.CapabilityGrant
 	Scopes map[string]capabilitydomain.CapabilityScope
+	// Capability, when supplied, gates resolution on the capability's own
+	// lifecycle eligibility (ADR-BCP-003 §6). Nil by default and skipped
+	// when nil, mirroring Grants' opt-in rollout mechanism.
+	Capability *capabilitydomain.Capability
 }
 
 // ResolutionResult is the final output from the composed resolver pipeline.
@@ -106,6 +110,7 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		CapabilityKey: "baobab_trade",
 		Context:       req.Context,
 		Bindings:      req.Bindings,
+		Capability:    req.Capability,
 	})
 	if err != nil {
 		return ResolutionResult{}, resolutionFailure(trace, err)
