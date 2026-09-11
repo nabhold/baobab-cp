@@ -121,6 +121,15 @@ type ContextWriter interface {
 	DeleteContextsByTenant(ctx context.Context, tenantID string) (int64, error)
 }
 
+// ContextStore combines the read and write resolved-Context contracts so a
+// caller -- the Runtime API handlers, in particular -- can depend on one
+// interface instead of importing ContextRepository and ContextWriter
+// separately.
+type ContextStore interface {
+	ContextRepository
+	ContextWriter
+}
+
 // ErrIdentityNotFound is returned by ResolveIdentity when no ExternalIdentity
 // exists for the given (issuer, subject) pair -- ADR-0004 §11's "absent"
 // branch of identity resolution, distinct from a repository failure, so
@@ -348,6 +357,7 @@ var _ IdentityUnlinkingRepository = (*Repository)(nil)
 var _ IdentityMergeRepository = (*Repository)(nil)
 var _ ContextRepository = (*Repository)(nil)
 var _ ContextWriter = (*Repository)(nil)
+var _ ContextStore = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{

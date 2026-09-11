@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/nabhold/baobab-cp/internal/auth"
 	"github.com/nabhold/baobab-cp/internal/domain"
+	"github.com/nabhold/baobab-cp/internal/repository"
 	"github.com/nabhold/baobab-cp/internal/service"
 	"github.com/nabhold/baobab-cp/internal/store"
 )
@@ -27,6 +28,19 @@ type Dependencies struct {
 	Resolution       service.ResolutionService
 	Canonical        service.CanonicalEntityService
 	Identity         service.IdentityService
+	// Contexts backs PlatformContextHandler/CapabilityResolveHandler (the
+	// ADR-BCP-004/003 Runtime APIs). Nil is a valid zero value: both
+	// handlers return 503 CONTEXT_STORE_UNAVAILABLE rather than panicking
+	// when it is unset, so leaving it out of Dependencies (as every existing
+	// caller of New does today) changes nothing about any other route.
+	Contexts repository.ContextStore
+	// PlatformContextTTL bounds how long PlatformContextHandler's persisted
+	// contexts remain redeemable (ADR-BCP-004 §72). Zero leaves them
+	// unbounded -- callers that don't set it (every test in this package
+	// today) keep that prior behavior; cmd/controlplane/main.go sets it from
+	// config.Config.PlatformContextTTL, which itself defaults to a bounded
+	// value rather than leaving it unset.
+	PlatformContextTTL time.Duration
 }
 type API struct {
 	store            store.TenantStore
@@ -51,6 +65,12 @@ func New(dependencies Dependencies) http.Handler {
 	r.With(a.authorize(a.adminVerifier, "admin", "tenant:read")).Get("/v1/entitlements", a.getEntitlement)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/context/resolve", a.resolveContext)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/resolve", ResolverHandler{Service: a.resolution, Identity: dependencies.Identity}.Resolve)
+	// ADR-BCP-004/003 Runtime APIs (issue #74 sub-work item 6), deliberately
+	// on their own paths rather than /v1/context/resolve and /v1/resolve
+	// (which are the pre-existing, differently-shaped endpoints above): see
+	// PlatformContextHandler's doc comment for why.
+	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/platform-context/resolve", PlatformContextHandler{Identity: dependencies.Identity, Contexts: dependencies.Contexts, TTL: dependencies.PlatformContextTTL}.Resolve)
+	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/capabilities/resolve", CapabilityResolveHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Resolve)
 	canonical := canonicalHandler{service: dependencies.Canonical}
 	r.With(a.authorize(a.adminVerifier, "admin", "canonical:write")).Post("/v1/canonical-entities", canonical.create)
 	r.With(a.authorize(a.adminVerifier, "admin", "canonical:read")).Get("/v1/canonical-entities/{entityID}", canonical.get)

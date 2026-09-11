@@ -54,6 +54,9 @@ var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
 var _ IdentityLinkingRepository = (*PostgresRepository)(nil)
 var _ IdentityUnlinkingRepository = (*PostgresRepository)(nil)
 var _ IdentityMergeRepository = (*PostgresRepository)(nil)
+var _ ContextRepository = (*PostgresRepository)(nil)
+var _ ContextWriter = (*PostgresRepository)(nil)
+var _ ContextStore = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)

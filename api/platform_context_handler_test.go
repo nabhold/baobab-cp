@@ -1,0 +1,102 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/nabhold/baobab-cp/internal/auth"
+	"github.com/nabhold/baobab-cp/internal/repository"
+	"github.com/nabhold/baobab-cp/internal/service"
+)
+
+func TestPlatformContextHandlerResolvesAndPersistsContext(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	handler := PlatformContextHandler{
+		Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+		Contexts: repo,
+		TTL:      5 * time.Minute,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000001")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	var response platformContextResolveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.ContextID == "" {
+		t.Fatal("expected a non-empty context_id")
+	}
+	if response.TenantID != "tenant-123" {
+		t.Fatalf("expected tenant_id tenant-123, got %q", response.TenantID)
+	}
+	if response.ExpiresAt == nil || !response.ExpiresAt.After(response.ResolvedAt) {
+		t.Fatalf("expected expires_at to be set from TTL, got %+v", response.ExpiresAt)
+	}
+
+	stored, err := repo.GetContext(context.Background(), response.ContextID)
+	if err != nil {
+		t.Fatalf("expected the resolved context to be persisted: %v", err)
+	}
+	if stored.TenantID != "tenant-123" {
+		t.Fatalf("unexpected persisted context: %+v", stored)
+	}
+}
+
+func TestPlatformContextHandlerRejectsUnauthenticated(t *testing.T) {
+	handler := PlatformContextHandler{Contexts: repository.NewInMemoryRepository()}
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestPlatformContextHandlerRejectsUnresolvableIdentity(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	// No Provision policy set: IdentityService fails closed on an unknown
+	// principal, mirroring TestResolverHandlerRejectsUnresolvableIdentity.
+	handler := PlatformContextHandler{Identity: service.IdentityService{Repository: repo}, Contexts: repo}
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	req = req.WithContext(auth.WithPrincipal(context.Background(), principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusForbidden || !bytes.Contains(w.Body.Bytes(), []byte("IDENTITY_RESOLUTION_FAILED")) {
+		t.Fatalf("expected unresolvable identity rejection, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestPlatformContextHandlerFailsClosedWhenContextStoreUnavailable(t *testing.T) {
+	repo := repository.NewInMemoryRepository()
+	handler := PlatformContextHandler{
+		Identity: service.IdentityService{Repository: repo, Provision: service.WorkloadOnlyProvisioningPolicy},
+		// Contexts intentionally left nil.
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	principal := auth.Principal{Subject: "baobab-trade", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "workload", TenantID: "tenant-123", ClientID: "baobab-trade", TokenID: "token-123", Scopes: map[string]struct{}{"context:resolve": {}}}
+	requestContext := context.WithValue(context.Background(), correlationKey{}, "00000000-0000-4000-8000-000000000003")
+	req = req.WithContext(auth.WithPrincipal(requestContext, principal))
+	w := httptest.NewRecorder()
+
+	handler.Resolve(w, req)
+	if w.Code != http.StatusServiceUnavailable || !bytes.Contains(w.Body.Bytes(), []byte("CONTEXT_STORE_UNAVAILABLE")) {
+		t.Fatalf("expected fail-closed 503, got %d body=%s", w.Code, w.Body.String())
+	}
+}
