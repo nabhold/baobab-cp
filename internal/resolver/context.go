@@ -26,15 +26,17 @@ type ContextSource = domain.ContextSource
 
 // ResolutionEvidence is the input used by the resolver to derive runtime context.
 type ResolutionEvidence struct {
-	PrincipalID   string
-	TenantID      string
-	LegalEntityID string
-	MarketID      string
-	CountryCode   string
-	CurrencyCode  string
-	Locale        string
-	CorrelationID string
-	Provenance    map[string]ContextSource
+	PrincipalID    string
+	TenantID       string
+	LegalEntityID  string
+	OrganisationID string
+	BusinessUnitID string
+	MarketID       string
+	CountryCode    string
+	CurrencyCode   string
+	Locale         string
+	CorrelationID  string
+	Provenance     map[string]ContextSource
 }
 
 // ContextResolverImpl resolves runtime context using supplied evidence and trust metadata.
@@ -60,16 +62,18 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 		}
 	}
 	resolved := Context{
-		PrincipalID:   evidence.PrincipalID,
-		TenantID:      evidence.TenantID,
-		LegalEntityID: evidence.LegalEntityID,
-		MarketID:      evidence.MarketID,
-		CountryCode:   evidence.CountryCode,
-		CurrencyCode:  evidence.CurrencyCode,
-		Locale:        evidence.Locale,
-		CorrelationID: evidence.CorrelationID,
-		ResolvedAt:    time.Now().UTC(),
-		Provenance:    evidence.Provenance,
+		PrincipalID:    evidence.PrincipalID,
+		TenantID:       evidence.TenantID,
+		LegalEntityID:  evidence.LegalEntityID,
+		OrganisationID: evidence.OrganisationID,
+		BusinessUnitID: evidence.BusinessUnitID,
+		MarketID:       evidence.MarketID,
+		CountryCode:    evidence.CountryCode,
+		CurrencyCode:   evidence.CurrencyCode,
+		Locale:         evidence.Locale,
+		CorrelationID:  evidence.CorrelationID,
+		ResolvedAt:     time.Now().UTC(),
+		Provenance:     evidence.Provenance,
 	}
 	if err := resolved.Validate(); err != nil {
 		return Context{}, err
@@ -110,6 +114,8 @@ func (DefaultScopeMatcher) Match(ctx Context, scope domain.MappingScope) ScopeMa
 	}{
 		{name: "tenant", value: ctx.TenantID, want: scope.TenantID},
 		{name: "legal_entity", value: ctx.LegalEntityID, want: scope.LegalEntityID},
+		{name: "organisation", value: ctx.OrganisationID, want: scope.OrganisationID},
+		{name: "business_unit", value: ctx.BusinessUnitID, want: scope.BusinessUnitID},
 		{name: "market", value: ctx.MarketID, want: scope.MarketID},
 		{name: "country", value: ctx.CountryCode, want: scope.Country},
 		{name: "digital_estate", value: ctx.DigitalEstateID, want: scope.EstateID},

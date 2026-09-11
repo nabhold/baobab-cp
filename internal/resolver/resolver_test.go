@@ -38,6 +38,26 @@ func TestScopeMatcherPrefersMoreSpecificMatch(t *testing.T) {
 	}
 }
 
+// TestScopeMatcherChecksOrganisationAndBusinessUnit is a regression test
+// for the organisation_id/business_unit_id dimensions ADR-BCP-004 §5 lists
+// on PlatformContext's canonical model but domain.Context did not carry
+// until now: a scope restricted to a different organisation/business unit
+// must be rejected, not silently treated as compatible.
+func TestScopeMatcherChecksOrganisationAndBusinessUnit(t *testing.T) {
+	matcher := DefaultScopeMatcher{}
+	ctx := Context{TenantID: "tenant-123", OrganisationID: "org-a", BusinessUnitID: "bu-a"}
+
+	compatible := matcher.Match(ctx, domain.MappingScope{TenantID: "tenant-123", OrganisationID: "org-a", BusinessUnitID: "bu-a"})
+	if !compatible.Compatible {
+		t.Fatal("expected matching organisation/business_unit to be compatible")
+	}
+
+	incompatible := matcher.Match(ctx, domain.MappingScope{TenantID: "tenant-123", OrganisationID: "org-b"})
+	if incompatible.Compatible {
+		t.Fatal("expected a scope restricted to a different organisation to be incompatible")
+	}
+}
+
 func TestContextResolverMergesEvidenceAndTrust(t *testing.T) {
 	resolver := ContextResolverImpl{}
 	evidence := ResolutionEvidence{
