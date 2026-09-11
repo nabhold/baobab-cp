@@ -47,6 +47,8 @@ var _ MappingScopeWriter = (*PostgresRepository)(nil)
 var _ CapabilityScopeWriter = (*PostgresRepository)(nil)
 var _ CapabilityGrantRepository = (*PostgresRepository)(nil)
 var _ CapabilityGrantWriter = (*PostgresRepository)(nil)
+var _ CapabilityRegistryRepository = (*PostgresRepository)(nil)
+var _ CapabilityRegistryWriter = (*PostgresRepository)(nil)
 var _ IdentityRepository = (*PostgresRepository)(nil)
 var _ IdentityReferenceRepository = (*PostgresRepository)(nil)
 var _ IdentityLinkingRepository = (*PostgresRepository)(nil)
@@ -1084,6 +1086,120 @@ func (r *PostgresRepository) RevokeGrant(ctx context.Context, grantID, revokedBy
 		return fmt.Errorf("capability grant %s version conflict or not found", grantID)
 	}
 	return nil
+}
+
+func (r *PostgresRepository) GetCapability(ctx context.Context, capabilityKey string) (capabilitydomain.Capability, error) {
+	if r == nil || r.pool == nil {
+		return capabilitydomain.Capability{}, errors.New("repository is not initialized")
+	}
+	var c capabilitydomain.Capability
+	var lifecycle, maturity string
+	err := r.pool.QueryRow(ctx, `
+		SELECT capability_id::text, code, name, COALESCE(description, ''), COALESCE(domain_key, ''), UPPER(status), UPPER(maturity)
+		FROM capability.capability WHERE code = $1`, capabilityKey).
+		Scan(&c.ID, &c.Key, &c.Name, &c.Description, &c.DomainKey, &lifecycle, &maturity)
+	if err != nil {
+		return capabilitydomain.Capability{}, fmt.Errorf("get capability %s: %w", capabilityKey, err)
+	}
+	c.Lifecycle = capabilitydomain.CapabilityLifecycle(lifecycle)
+	c.Maturity = capabilitydomain.CapabilityMaturity(maturity)
+	return c, nil
+}
+
+// CreateCapability expects capability.ID to already be set by the caller
+// (via domain.NewUUIDv7()), matching every other Create* method in this
+// package.
+func (r *PostgresRepository) CreateCapability(ctx context.Context, capability capabilitydomain.Capability) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := capability.Validate(); err != nil {
+		return fmt.Errorf("validate capability: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO capability.capability(capability_id, code, name, description, domain_key, status, maturity)
+		VALUES ($1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6, $7)`,
+		capability.ID, capability.Key, capability.Name, capability.Description, capability.DomainKey,
+		string(capability.Lifecycle), string(capability.Maturity))
+	return err
+}
+
+func (r *PostgresRepository) ListCapabilityDependencies(ctx context.Context, capabilityKey string) ([]capabilitydomain.CapabilityDependency, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT cd.id::text, cap.code, dep.code, cd.dependency_type, COALESCE(cd.version_constraint, ''), COALESCE(cd.condition, ''), cd.status
+		FROM capability.capability_dependency cd
+		JOIN capability.capability cap ON cap.capability_id = cd.capability_id
+		JOIN capability.capability dep ON dep.capability_id = cd.depends_on_capability_id
+		WHERE cap.code = $1`, capabilityKey)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []capabilitydomain.CapabilityDependency
+	for rows.Next() {
+		var d capabilitydomain.CapabilityDependency
+		var dependencyType string
+		if err := rows.Scan(&d.ID, &d.CapabilityKey, &d.DependsOnCapability, &dependencyType, &d.VersionConstraint, &d.Condition, &d.Status); err != nil {
+			return nil, err
+		}
+		d.DependencyType = capabilitydomain.DependencyType(dependencyType)
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateCapabilityDependency enforces ADR-BCP-003 §8's acyclic requirement
+// across the whole REQUIRED-only dependency graph: it loads every existing
+// REQUIRED edge (not merely the two capabilities being linked) before
+// deciding whether the candidate edge would close a cycle.
+func (r *PostgresRepository) CreateCapabilityDependency(ctx context.Context, dependency capabilitydomain.CapabilityDependency) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := dependency.Validate(); err != nil {
+		return fmt.Errorf("validate capability dependency: %w", err)
+	}
+	if dependency.DependencyType == capabilitydomain.DependencyTypeRequired {
+		rows, err := r.pool.Query(ctx, `
+			SELECT cap.code, dep.code
+			FROM capability.capability_dependency cd
+			JOIN capability.capability cap ON cap.capability_id = cd.capability_id
+			JOIN capability.capability dep ON dep.capability_id = cd.depends_on_capability_id
+			WHERE cd.dependency_type = 'REQUIRED'`)
+		if err != nil {
+			return fmt.Errorf("load required dependency graph: %w", err)
+		}
+		existing := []capabilitydomain.CapabilityDependency{dependency}
+		for rows.Next() {
+			var key, dependsOn string
+			if err := rows.Scan(&key, &dependsOn); err != nil {
+				rows.Close()
+				return err
+			}
+			existing = append(existing, capabilitydomain.CapabilityDependency{CapabilityKey: key, DependsOnCapability: dependsOn, DependencyType: capabilitydomain.DependencyTypeRequired})
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if capabilitydomain.HasCapabilityDependencyCycle(existing) {
+			return fmt.Errorf("adding %s -> %s would create a required-dependency cycle", dependency.CapabilityKey, dependency.DependsOnCapability)
+		}
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO capability.capability_dependency(capability_id, depends_on_capability_id, dependency_type, version_constraint, condition)
+		SELECT cap.capability_id, dep.capability_id, $3, NULLIF($4, ''), NULLIF($5, '')
+		FROM capability.capability cap, capability.capability dep
+		WHERE cap.code = $1 AND dep.code = $2`,
+		dependency.CapabilityKey, dependency.DependsOnCapability, string(dependency.DependencyType), dependency.VersionConstraint, dependency.Condition)
+	return err
 }
 
 func (r *PostgresRepository) Ping(ctx context.Context) error {

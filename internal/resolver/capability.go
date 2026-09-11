@@ -20,6 +20,13 @@ type CapabilityResolutionQuery struct {
 	Bindings      []CapabilityBinding
 	Scopes        map[string]domain.MappingScope
 	At            time.Time
+	// Capability, when supplied, gates resolution on the capability's own
+	// lifecycle eligibility (ADR-BCP-003 §6: only ACTIVE capabilities
+	// SHALL resolve by default). Nil by default and skipped when nil --
+	// no caller populates the Capability registry from real callers yet,
+	// so unconditionally enforcing this would fail every resolution today.
+	// Mirrors EntitlementResolutionQuery's nil-means-skip Grants field.
+	Capability *capabilitydomain.Capability
 }
 
 // ResolvedCapability is the selected capability binding and target engine.
@@ -39,6 +46,9 @@ type CapabilityResolverImpl struct{}
 func (CapabilityResolverImpl) Resolve(_ context.Context, q CapabilityResolutionQuery) (ResolvedCapability, error) {
 	if q.CapabilityKey == "" {
 		return ResolvedCapability{}, errors.New("capability key is required")
+	}
+	if q.Capability != nil && !q.Capability.IsResolvable() {
+		return ResolvedCapability{}, errors.New("capability is not in a resolvable lifecycle state")
 	}
 	if len(q.Bindings) == 0 {
 		return ResolvedCapability{}, errors.New("capability not found")

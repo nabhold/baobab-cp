@@ -22,6 +22,24 @@ type CapabilityRepository interface {
 	ListActiveInstances(ctx context.Context, engineID string) ([]resolver.EngineInstance, error)
 }
 
+// CapabilityRegistryRepository is the read contract for the Capability
+// registry itself (ADR-BCP-003 §4, "Capability Registry") -- distinct from
+// CapabilityRepository above, which reads CapabilityBinding/EngineInstance
+// routing data, not the capability aggregate's own identity and lifecycle.
+type CapabilityRegistryRepository interface {
+	GetCapability(ctx context.Context, capabilityKey string) (capabilitydomain.Capability, error)
+	ListCapabilityDependencies(ctx context.Context, capabilityKey string) ([]capabilitydomain.CapabilityDependency, error)
+}
+
+// CapabilityRegistryWriter is the mutable Capability registry contract.
+// CreateCapabilityDependency enforces ADR-BCP-003 §8's "Required
+// dependency graphs SHALL be acyclic" at write time, across the whole
+// REQUIRED-only graph, not merely the dependency being inserted.
+type CapabilityRegistryWriter interface {
+	CreateCapability(ctx context.Context, capability capabilitydomain.Capability) error
+	CreateCapabilityDependency(ctx context.Context, dependency capabilitydomain.CapabilityDependency) error
+}
+
 // ResolverRepository combines the mapping and capability read contracts used by the resolution stack.
 type ResolverRepository interface {
 	MappingRepository
@@ -236,15 +254,17 @@ type IdentityReferenceRepository interface {
 
 // Repository is a lightweight in-memory repository backing the resolver/service layer.
 type Repository struct {
-	Mappings           map[string][]domain.Mapping
-	Bindings           map[string][]resolver.CapabilityBinding
-	EngineInstances    map[string][]resolver.EngineInstance
-	MappingScopes      map[string]domain.MappingScope              // keyed by ScopeID
-	CapabilityScopes   map[string]capabilitydomain.CapabilityScope // keyed by ScopeID
-	Grants             map[string]capabilitydomain.CapabilityGrant // keyed by ID
-	Principals         map[string]domain.Principal                 // keyed by ID
-	ExternalIdentities map[string]domain.ExternalIdentity          // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
-	IdentityReferences map[string]domain.IdentityReference         // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
+	Mappings               map[string][]domain.Mapping
+	Bindings               map[string][]resolver.CapabilityBinding
+	EngineInstances        map[string][]resolver.EngineInstance
+	MappingScopes          map[string]domain.MappingScope                     // keyed by ScopeID
+	CapabilityScopes       map[string]capabilitydomain.CapabilityScope        // keyed by ScopeID
+	Grants                 map[string]capabilitydomain.CapabilityGrant        // keyed by ID
+	Capabilities           map[string]capabilitydomain.Capability             // keyed by Key
+	CapabilityDependencies map[string][]capabilitydomain.CapabilityDependency // keyed by owning CapabilityKey
+	Principals             map[string]domain.Principal                        // keyed by ID
+	ExternalIdentities     map[string]domain.ExternalIdentity                 // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
+	IdentityReferences     map[string]domain.IdentityReference                // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -294,6 +314,8 @@ var _ MappingScopeWriter = (*Repository)(nil)
 var _ CapabilityScopeWriter = (*Repository)(nil)
 var _ CapabilityGrantRepository = (*Repository)(nil)
 var _ CapabilityGrantWriter = (*Repository)(nil)
+var _ CapabilityRegistryRepository = (*Repository)(nil)
+var _ CapabilityRegistryWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
@@ -302,15 +324,17 @@ var _ IdentityMergeRepository = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
-		Mappings:           map[string][]domain.Mapping{},
-		Bindings:           map[string][]resolver.CapabilityBinding{},
-		EngineInstances:    map[string][]resolver.EngineInstance{},
-		MappingScopes:      map[string]domain.MappingScope{},
-		CapabilityScopes:   map[string]capabilitydomain.CapabilityScope{},
-		Grants:             map[string]capabilitydomain.CapabilityGrant{},
-		Principals:         map[string]domain.Principal{},
-		ExternalIdentities: map[string]domain.ExternalIdentity{},
-		IdentityReferences: map[string]domain.IdentityReference{},
+		Mappings:               map[string][]domain.Mapping{},
+		Bindings:               map[string][]resolver.CapabilityBinding{},
+		EngineInstances:        map[string][]resolver.EngineInstance{},
+		MappingScopes:          map[string]domain.MappingScope{},
+		CapabilityScopes:       map[string]capabilitydomain.CapabilityScope{},
+		Grants:                 map[string]capabilitydomain.CapabilityGrant{},
+		Capabilities:           map[string]capabilitydomain.Capability{},
+		CapabilityDependencies: map[string][]capabilitydomain.CapabilityDependency{},
+		Principals:             map[string]domain.Principal{},
+		ExternalIdentities:     map[string]domain.ExternalIdentity{},
+		IdentityReferences:     map[string]domain.IdentityReference{},
 	}
 }
 
@@ -505,6 +529,63 @@ func (r *Repository) RevokeGrant(_ context.Context, grantID, revokedBy, reason s
 	grant.RevocationReason = reason
 	grant.Version = grant.Version + 1
 	r.Grants[grantID] = grant
+	return nil
+}
+
+func (r *Repository) GetCapability(_ context.Context, capabilityKey string) (capabilitydomain.Capability, error) {
+	if r == nil {
+		return capabilitydomain.Capability{}, errors.New("repository is nil")
+	}
+	capability, ok := r.Capabilities[capabilityKey]
+	if !ok {
+		return capabilitydomain.Capability{}, fmt.Errorf("capability %s not found", capabilityKey)
+	}
+	return capability, nil
+}
+
+func (r *Repository) CreateCapability(_ context.Context, capability capabilitydomain.Capability) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := capability.Validate(); err != nil {
+		return fmt.Errorf("validate capability: %w", err)
+	}
+	if _, exists := r.Capabilities[capability.Key]; exists {
+		return fmt.Errorf("capability %s already exists", capability.Key)
+	}
+	r.Capabilities[capability.Key] = capability
+	return nil
+}
+
+func (r *Repository) ListCapabilityDependencies(_ context.Context, capabilityKey string) ([]capabilitydomain.CapabilityDependency, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	return r.CapabilityDependencies[capabilityKey], nil
+}
+
+// CreateCapabilityDependency enforces ADR-BCP-003 §8's acyclic requirement
+// across the whole REQUIRED-only dependency graph, not merely the edge
+// being inserted -- a per-edge check alone cannot see a cycle that closes
+// through capabilities other than the two endpoints.
+func (r *Repository) CreateCapabilityDependency(_ context.Context, dependency capabilitydomain.CapabilityDependency) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := dependency.Validate(); err != nil {
+		return fmt.Errorf("validate capability dependency: %w", err)
+	}
+	if dependency.DependencyType == capabilitydomain.DependencyTypeRequired {
+		all := make([]capabilitydomain.CapabilityDependency, 0)
+		for _, deps := range r.CapabilityDependencies {
+			all = append(all, deps...)
+		}
+		all = append(all, dependency)
+		if capabilitydomain.HasCapabilityDependencyCycle(all) {
+			return fmt.Errorf("adding %s -> %s would create a required-dependency cycle", dependency.CapabilityKey, dependency.DependsOnCapability)
+		}
+	}
+	r.CapabilityDependencies[dependency.CapabilityKey] = append(r.CapabilityDependencies[dependency.CapabilityKey], dependency)
 	return nil
 }
 
