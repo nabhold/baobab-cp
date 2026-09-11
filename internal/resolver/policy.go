@@ -3,6 +3,8 @@ package resolver
 import (
 	"context"
 	"errors"
+
+	"github.com/nabhold/baobab-cp/internal/domain"
 )
 
 // PolicyDecision represents the result of checking a capability binding against policy constraints.
@@ -41,7 +43,7 @@ func EnforcePolicy(ctx context.Context, q CapabilityResolutionQuery) (ResolvedCa
 		CapabilityKey:    resolved.CapabilityKey,
 		EngineID:         resolved.EngineID,
 		EngineInstanceID: resolved.EngineInstanceID,
-		BindingMode:      resolved.BindingMode,
+		BindingMode:      domain.BindingMode(resolved.BindingMode),
 		Status:           "ACTIVE",
 		ContractVersion:  resolved.ContractVersion,
 	})

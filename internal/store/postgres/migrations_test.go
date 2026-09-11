@@ -37,6 +37,7 @@ func TestCanonicalMigrationFilesExist(t *testing.T) {
 		{name: "000022_canonical_mapping_temporal_integrity.sql", needle: "canonical_mapping_source_type_active_excl", context: "canonical mapping temporal integrity migration"},
 		{name: "000023_outbox_tenant_identity.sql", needle: "ALTER COLUMN aggregate_id TYPE text", context: "outbox tenant identity migration"},
 		{name: "000024_resolution_spine_invariants.sql", needle: "tenant_isolation_profile_active_excl", context: "resolution spine database invariants"},
+		{name: "000028_capability_providers_and_binding_mode.sql", needle: "CREATE TABLE IF NOT EXISTS capability.capability_provider", context: "capability provider and binding mode migration"},
 	}
 
 	for _, tc := range checks {
