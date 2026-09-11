@@ -144,6 +144,34 @@ type DigitalEstateWriter interface {
 	CreateDigitalEstate(ctx context.Context, estate domain.DigitalEstate) error
 }
 
+// ErrMarketAssignmentOverlap is returned when an AssignMarketToTenant insert
+// is rejected by market.market_assignment's market_assignment_active_excl
+// exclusion constraint (migration 000024): the same (tenant_id, market_id)
+// pair already has an assignment with an overlapping validity period. A
+// tenant MAY have concurrent assignments to different markets, just not two
+// overlapping assignments to the same one.
+var ErrMarketAssignmentOverlap = errors.New("overlapping active market assignment")
+
+// MarketRepository is the read contract for markets and market assignments
+// (ADR-BCP-004 §4/§55, market.market / market.market_assignment --
+// migration 000006). The tables have existed since early in this
+// codebase's history; this and MarketWriter are the first Go code to read
+// or write them.
+type MarketRepository interface {
+	GetMarket(ctx context.Context, id string) (domain.Market, error)
+	GetMarketByCode(ctx context.Context, code string) (domain.Market, error)
+	// ListActiveMarketsForTenant returns every Market with an assignment
+	// covering at (i.e. effective_from <= at < effective_to, or no
+	// effective_to at all).
+	ListActiveMarketsForTenant(ctx context.Context, tenantID string, at time.Time) ([]domain.Market, error)
+}
+
+// MarketWriter is the mutable market/market-assignment contract.
+type MarketWriter interface {
+	CreateMarket(ctx context.Context, market domain.Market) error
+	AssignMarketToTenant(ctx context.Context, assignment domain.MarketAssignment) error
+}
+
 // ErrTenantIsolationProfileOverlap is returned when an
 // AssignIsolationProfileToTenant insert is rejected by policy.
 // tenant_isolation_profile's tenant_isolation_profile_active_excl exclusion
@@ -342,6 +370,8 @@ type Repository struct {
 	IdentityReferences     map[string]domain.IdentityReference                // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
 	Contexts               map[string]domain.Context                          // keyed by ID
 	DigitalEstates         map[string]domain.DigitalEstate                    // keyed by ID
+	Markets                map[string]domain.Market                           // keyed by ID
+	MarketAssignments      map[string]domain.MarketAssignment                 // keyed by ID
 	IsolationProfiles      map[string]domain.IsolationProfile                 // keyed by ID
 	// TenantIsolationProfiles has no synthetic ID (mirroring the real
 	// table's PRIMARY KEY (tenant_id, isolation_profile_id, effective_from));
@@ -408,6 +438,8 @@ var _ ContextWriter = (*Repository)(nil)
 var _ ContextStore = (*Repository)(nil)
 var _ DigitalEstateRepository = (*Repository)(nil)
 var _ DigitalEstateWriter = (*Repository)(nil)
+var _ MarketRepository = (*Repository)(nil)
+var _ MarketWriter = (*Repository)(nil)
 var _ IsolationProfileRepository = (*Repository)(nil)
 var _ IsolationProfileWriter = (*Repository)(nil)
 
@@ -426,6 +458,8 @@ func NewInMemoryRepository() *Repository {
 		IdentityReferences:      map[string]domain.IdentityReference{},
 		Contexts:                map[string]domain.Context{},
 		DigitalEstates:          map[string]domain.DigitalEstate{},
+		Markets:                 map[string]domain.Market{},
+		MarketAssignments:       map[string]domain.MarketAssignment{},
 		IsolationProfiles:       map[string]domain.IsolationProfile{},
 		TenantIsolationProfiles: map[string]domain.TenantIsolationProfileAssignment{},
 	}
@@ -1045,6 +1079,106 @@ func (r *Repository) ListDigitalEstatesForTenant(_ context.Context, tenantID str
 		if estate.TenantID == tenantID {
 			out = append(out, estate)
 		}
+	}
+	return out, nil
+}
+
+func (r *Repository) CreateMarket(_ context.Context, market domain.Market) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := market.Validate(); err != nil {
+		return fmt.Errorf("validate market: %w", err)
+	}
+	if market.ID == "" {
+		return errors.New("market id is required")
+	}
+	if _, exists := r.Markets[market.ID]; exists {
+		return fmt.Errorf("market %s already exists", market.ID)
+	}
+	for _, existing := range r.Markets {
+		if existing.Code == market.Code {
+			return fmt.Errorf("market code %q is already in use", market.Code)
+		}
+	}
+	r.Markets[market.ID] = market
+	return nil
+}
+
+func (r *Repository) GetMarket(_ context.Context, id string) (domain.Market, error) {
+	if r == nil {
+		return domain.Market{}, errors.New("repository is nil")
+	}
+	market, ok := r.Markets[id]
+	if !ok {
+		return domain.Market{}, fmt.Errorf("market %s not found", id)
+	}
+	return market, nil
+}
+
+func (r *Repository) GetMarketByCode(_ context.Context, code string) (domain.Market, error) {
+	if r == nil {
+		return domain.Market{}, errors.New("repository is nil")
+	}
+	for _, market := range r.Markets {
+		if market.Code == code {
+			return market, nil
+		}
+	}
+	return domain.Market{}, fmt.Errorf("market with code %q not found", code)
+}
+
+// marketAssignmentPeriodsOverlap mirrors market_assignment_active_excl's
+// [effective_from, effective_to) semantics: a nil EffectiveTo behaves as
+// unbounded (+infinity).
+func marketAssignmentPeriodsOverlap(a, b domain.MarketAssignment) bool {
+	aEndsBeforeBStarts := a.EffectiveTo != nil && !a.EffectiveTo.After(b.EffectiveFrom)
+	bEndsBeforeAStarts := b.EffectiveTo != nil && !b.EffectiveTo.After(a.EffectiveFrom)
+	return !aEndsBeforeBStarts && !bEndsBeforeAStarts
+}
+
+func (r *Repository) AssignMarketToTenant(_ context.Context, assignment domain.MarketAssignment) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := assignment.Validate(); err != nil {
+		return fmt.Errorf("validate market assignment: %w", err)
+	}
+	if assignment.ID == "" {
+		return errors.New("market assignment id is required")
+	}
+	if _, exists := r.MarketAssignments[assignment.ID]; exists {
+		return fmt.Errorf("market assignment %s already exists", assignment.ID)
+	}
+	for _, existing := range r.MarketAssignments {
+		if existing.TenantID == assignment.TenantID && existing.MarketID == assignment.MarketID && marketAssignmentPeriodsOverlap(existing, assignment) {
+			return fmt.Errorf("%w: tenant %s, market %s", ErrMarketAssignmentOverlap, assignment.TenantID, assignment.MarketID)
+		}
+	}
+	r.MarketAssignments[assignment.ID] = assignment
+	return nil
+}
+
+func (r *Repository) ListActiveMarketsForTenant(_ context.Context, tenantID string, at time.Time) ([]domain.Market, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var out []domain.Market
+	for _, assignment := range r.MarketAssignments {
+		if assignment.TenantID != tenantID {
+			continue
+		}
+		if assignment.EffectiveFrom.After(at) {
+			continue
+		}
+		if assignment.EffectiveTo != nil && !assignment.EffectiveTo.After(at) {
+			continue
+		}
+		market, ok := r.Markets[assignment.MarketID]
+		if !ok {
+			continue
+		}
+		out = append(out, market)
 	}
 	return out, nil
 }
