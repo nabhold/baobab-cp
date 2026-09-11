@@ -57,6 +57,8 @@ var _ IdentityMergeRepository = (*PostgresRepository)(nil)
 var _ ContextRepository = (*PostgresRepository)(nil)
 var _ ContextWriter = (*PostgresRepository)(nil)
 var _ ContextStore = (*PostgresRepository)(nil)
+var _ DigitalEstateRepository = (*PostgresRepository)(nil)
+var _ DigitalEstateWriter = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -1311,6 +1313,72 @@ func (r *PostgresRepository) DeleteContextsByTenant(ctx context.Context, tenantI
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+// CreateDigitalEstate persists a DigitalEstate (ADR-BCP-004 §4/§55,
+// estate.digital_estate -- migration 000007, previously unread/unwritten by
+// any Go code). estate.ID is expected to already be a caller-minted UUIDv7,
+// matching every other first-class resource this repository creates.
+func (r *PostgresRepository) CreateDigitalEstate(ctx context.Context, estate domain.DigitalEstate) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := estate.Validate(); err != nil {
+		return fmt.Errorf("validate digital estate: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO estate.digital_estate(digital_estate_id, tenant_id, name, domain, status)
+		VALUES ($1::uuid, $2, $3, $4, COALESCE(NULLIF($5, ''), 'ACTIVE'))`,
+		estate.ID, estate.TenantID, estate.Name, estate.Domain, string(estate.Status),
+	)
+	return err
+}
+
+func (r *PostgresRepository) GetDigitalEstate(ctx context.Context, id string) (domain.DigitalEstate, error) {
+	if r == nil || r.pool == nil {
+		return domain.DigitalEstate{}, errors.New("repository is not initialized")
+	}
+	var e domain.DigitalEstate
+	var status string
+	err := r.pool.QueryRow(ctx, `
+		SELECT digital_estate_id::text, tenant_id, name, domain, UPPER(status), created_at
+		FROM estate.digital_estate WHERE digital_estate_id = $1::uuid`, id,
+	).Scan(&e.ID, &e.TenantID, &e.Name, &e.Domain, &status, &e.CreatedAt)
+	if err != nil {
+		return domain.DigitalEstate{}, fmt.Errorf("get digital estate %s: %w", id, err)
+	}
+	e.Status = domain.DigitalEstateStatus(status)
+	e.CreatedAt = e.CreatedAt.UTC()
+	return e, nil
+}
+
+func (r *PostgresRepository) ListDigitalEstatesForTenant(ctx context.Context, tenantID string) ([]domain.DigitalEstate, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT digital_estate_id::text, tenant_id, name, domain, UPPER(status), created_at
+		FROM estate.digital_estate WHERE tenant_id = $1 ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.DigitalEstate
+	for rows.Next() {
+		var e domain.DigitalEstate
+		var status string
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Name, &e.Domain, &status, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.Status = domain.DigitalEstateStatus(status)
+		e.CreatedAt = e.CreatedAt.UTC()
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (r *PostgresRepository) Ping(ctx context.Context) error {

@@ -688,3 +688,49 @@ func TestInMemoryRepositoryPersistsAndExpiresResolvedContexts(t *testing.T) {
 		t.Fatal("expected the deleted context to be gone")
 	}
 }
+
+func TestInMemoryRepositoryDigitalEstates(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	estate := domain.DigitalEstate{ID: "estate-1", TenantID: "tn_zuribeans", Name: "ZuriBeans Storefront", Domain: "shop.zuribeans.com", Status: domain.DigitalEstateActive}
+	if err := repo.CreateDigitalEstate(ctx, estate); err != nil {
+		t.Fatalf("create digital estate failed: %v", err)
+	}
+	if err := repo.CreateDigitalEstate(ctx, estate); err == nil {
+		t.Fatal("expected duplicate digital estate id to be rejected")
+	}
+
+	duplicateDomain := domain.DigitalEstate{ID: "estate-2", TenantID: "tn_other", Name: "Other", Domain: "shop.zuribeans.com", Status: domain.DigitalEstateActive}
+	if err := repo.CreateDigitalEstate(ctx, duplicateDomain); err == nil {
+		t.Fatal("expected a globally duplicate domain to be rejected")
+	}
+
+	fetched, err := repo.GetDigitalEstate(ctx, "estate-1")
+	if err != nil {
+		t.Fatalf("get digital estate failed: %v", err)
+	}
+	if fetched.TenantID != "tn_zuribeans" || fetched.Domain != "shop.zuribeans.com" {
+		t.Fatalf("unexpected fetched digital estate: %+v", fetched)
+	}
+	if _, err := repo.GetDigitalEstate(ctx, "missing-estate"); err == nil {
+		t.Fatal("expected missing digital estate lookup to fail")
+	}
+
+	second := domain.DigitalEstate{ID: "estate-3", TenantID: "tn_zuribeans", Name: "ZuriBeans Wholesale", Domain: "wholesale.zuribeans.com", Status: domain.DigitalEstateActive}
+	if err := repo.CreateDigitalEstate(ctx, second); err != nil {
+		t.Fatalf("create second digital estate failed: %v", err)
+	}
+	forOther := domain.DigitalEstate{ID: "estate-4", TenantID: "tn_other", Name: "Other Estate", Domain: "shop.other.com", Status: domain.DigitalEstateActive}
+	if err := repo.CreateDigitalEstate(ctx, forOther); err != nil {
+		t.Fatalf("create other-tenant digital estate failed: %v", err)
+	}
+
+	estates, err := repo.ListDigitalEstatesForTenant(ctx, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("list digital estates failed: %v", err)
+	}
+	if len(estates) != 2 {
+		t.Fatalf("expected exactly two digital estates for tn_zuribeans, got %+v", estates)
+	}
+}
