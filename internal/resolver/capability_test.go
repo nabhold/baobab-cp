@@ -38,6 +38,32 @@ func TestCapabilityResolverResolveUsesHighestPriorityBinding(t *testing.T) {
 	}
 }
 
+func TestCapabilityResolverBindingModePrecedesPriority(t *testing.T) {
+	resolver := CapabilityResolverImpl{}
+	// Per nabhold/shared's canonical scope-specificity.yaml, binding_mode
+	// preference is resolved BEFORE explicit priority: a PRIMARY binding
+	// SHALL win over a FALLBACK binding even when the FALLBACK carries a
+	// far higher administrative priority. Priority is a tie-breaker of
+	// last resort among candidates still tied after binding mode, never a
+	// substitute for it (ADR-BCP-003 SS18, "Priority vs Specificity").
+	query := CapabilityResolutionQuery{
+		CapabilityKey: "baobab_trade",
+		Context:       Context{TenantID: "tenant-123"},
+		Bindings: []CapabilityBinding{
+			{ID: "fallback", CapabilityKey: "baobab_trade", EngineID: "engine-1", EngineInstanceID: "instance-1", BindingMode: "FALLBACK", Status: "ACTIVE", Priority: 1000, ContractVersion: "v1"},
+			{ID: "primary", CapabilityKey: "baobab_trade", EngineID: "engine-2", EngineInstanceID: "instance-2", BindingMode: "PRIMARY", Status: "ACTIVE", Priority: 1, ContractVersion: "v1"},
+		},
+	}
+
+	resolved, err := resolver.Resolve(context.Background(), query)
+	if err != nil {
+		t.Fatalf("resolve failed: %v", err)
+	}
+	if resolved.BindingID != "primary" {
+		t.Fatalf("expected the PRIMARY binding to win over a higher-priority FALLBACK, got %#v", resolved)
+	}
+}
+
 func TestCapabilityResolverUsesScopeBeforePriority(t *testing.T) {
 	resolver := CapabilityResolverImpl{}
 	query := CapabilityResolutionQuery{
