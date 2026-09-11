@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	capabilitydomain "github.com/nabhold/baobab-cp/internal/capability/domain"
 	"github.com/nabhold/baobab-cp/internal/domain"
 	"github.com/nabhold/baobab-cp/internal/resolver"
 )
@@ -49,6 +51,32 @@ type MappingScopeWriter interface {
 	CreateMappingScope(ctx context.Context, scope domain.MappingScope) error
 	GetMappingScope(ctx context.Context, scopeID string) (domain.MappingScope, error)
 	ListMappingScopes(ctx context.Context, tenantID string) ([]domain.MappingScope, error)
+}
+
+// CapabilityScopeWriter is the mutable CapabilityScope contract
+// (ADR-BCP-003 §13, capability.capability_scope -- migration 000029).
+// Deliberately separate from MappingScopeWriter: a CapabilityScope and a
+// MappingScope share dimension vocabulary but are distinct aggregates
+// evaluated by different resolvers (ADR-SHARED-007 §25).
+type CapabilityScopeWriter interface {
+	CreateCapabilityScope(ctx context.Context, scope capabilitydomain.CapabilityScope) error
+	GetCapabilityScope(ctx context.Context, scopeID string) (capabilitydomain.CapabilityScope, error)
+	ListCapabilityScopes(ctx context.Context, tenantID string) ([]capabilitydomain.CapabilityScope, error)
+}
+
+// CapabilityGrantRepository is the read contract for CapabilityGrant
+// (ADR-BCP-003 §9-12, capability.capability_grant -- migration 000029),
+// consumed by resolver.EntitlementResolverImpl.
+type CapabilityGrantRepository interface {
+	ListGrants(ctx context.Context, tenantID, capabilityKey string) ([]capabilitydomain.CapabilityGrant, error)
+}
+
+// CapabilityGrantWriter is the mutable CapabilityGrant contract. Revocation
+// is explicit per §12 -- there is deliberately no delete: a revoked grant
+// SHALL remain historically queryable.
+type CapabilityGrantWriter interface {
+	CreateGrant(ctx context.Context, grant capabilitydomain.CapabilityGrant) error
+	RevokeGrant(ctx context.Context, grantID, revokedBy, reason string, expectedVersion int64) error
 }
 
 // ErrIdentityNotFound is returned by ResolveIdentity when no ExternalIdentity
@@ -211,10 +239,12 @@ type Repository struct {
 	Mappings           map[string][]domain.Mapping
 	Bindings           map[string][]resolver.CapabilityBinding
 	EngineInstances    map[string][]resolver.EngineInstance
-	MappingScopes      map[string]domain.MappingScope      // keyed by ScopeID
-	Principals         map[string]domain.Principal         // keyed by ID
-	ExternalIdentities map[string]domain.ExternalIdentity  // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
-	IdentityReferences map[string]domain.IdentityReference // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
+	MappingScopes      map[string]domain.MappingScope              // keyed by ScopeID
+	CapabilityScopes   map[string]capabilitydomain.CapabilityScope // keyed by ScopeID
+	Grants             map[string]capabilitydomain.CapabilityGrant // keyed by ID
+	Principals         map[string]domain.Principal                 // keyed by ID
+	ExternalIdentities map[string]domain.ExternalIdentity          // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
+	IdentityReferences map[string]domain.IdentityReference         // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -261,6 +291,9 @@ var _ ResolverRepository = (*Repository)(nil)
 var _ MappingWriter = (*Repository)(nil)
 var _ CapabilityWriter = (*Repository)(nil)
 var _ MappingScopeWriter = (*Repository)(nil)
+var _ CapabilityScopeWriter = (*Repository)(nil)
+var _ CapabilityGrantRepository = (*Repository)(nil)
+var _ CapabilityGrantWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
@@ -273,6 +306,8 @@ func NewInMemoryRepository() *Repository {
 		Bindings:           map[string][]resolver.CapabilityBinding{},
 		EngineInstances:    map[string][]resolver.EngineInstance{},
 		MappingScopes:      map[string]domain.MappingScope{},
+		CapabilityScopes:   map[string]capabilitydomain.CapabilityScope{},
+		Grants:             map[string]capabilitydomain.CapabilityGrant{},
 		Principals:         map[string]domain.Principal{},
 		ExternalIdentities: map[string]domain.ExternalIdentity{},
 		IdentityReferences: map[string]domain.IdentityReference{},
@@ -381,6 +416,96 @@ func (r *Repository) ListMappingScopes(_ context.Context, tenantID string) ([]do
 		}
 	}
 	return out, nil
+}
+
+func (r *Repository) CreateCapabilityScope(_ context.Context, scope capabilitydomain.CapabilityScope) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := scope.Validate(); err != nil {
+		return fmt.Errorf("validate capability scope: %w", err)
+	}
+	if _, exists := r.CapabilityScopes[scope.ScopeID]; exists {
+		return fmt.Errorf("capability scope %s already exists", scope.ScopeID)
+	}
+	r.CapabilityScopes[scope.ScopeID] = scope
+	return nil
+}
+
+func (r *Repository) GetCapabilityScope(_ context.Context, scopeID string) (capabilitydomain.CapabilityScope, error) {
+	if r == nil {
+		return capabilitydomain.CapabilityScope{}, errors.New("repository is nil")
+	}
+	scope, ok := r.CapabilityScopes[scopeID]
+	if !ok {
+		return capabilitydomain.CapabilityScope{}, fmt.Errorf("capability scope %s not found", scopeID)
+	}
+	return scope, nil
+}
+
+func (r *Repository) ListCapabilityScopes(_ context.Context, tenantID string) ([]capabilitydomain.CapabilityScope, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var out []capabilitydomain.CapabilityScope
+	for _, scope := range r.CapabilityScopes {
+		if scope.TenantID == tenantID {
+			out = append(out, scope)
+		}
+	}
+	return out, nil
+}
+
+func (r *Repository) CreateGrant(_ context.Context, grant capabilitydomain.CapabilityGrant) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := grant.Validate(); err != nil {
+		return fmt.Errorf("validate capability grant: %w", err)
+	}
+	if _, exists := r.Grants[grant.ID]; exists {
+		return fmt.Errorf("capability grant %s already exists", grant.ID)
+	}
+	grant.Version = 1
+	r.Grants[grant.ID] = grant
+	return nil
+}
+
+func (r *Repository) ListGrants(_ context.Context, tenantID, capabilityKey string) ([]capabilitydomain.CapabilityGrant, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var out []capabilitydomain.CapabilityGrant
+	for _, grant := range r.Grants {
+		if grant.TenantID == tenantID && grant.CapabilityKey == capabilityKey {
+			out = append(out, grant)
+		}
+	}
+	return out, nil
+}
+
+// RevokeGrant sets status=REVOKED and records revocation provenance (§12);
+// it never deletes the row -- a revoked grant SHALL remain historically
+// queryable.
+func (r *Repository) RevokeGrant(_ context.Context, grantID, revokedBy, reason string, expectedVersion int64) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	grant, ok := r.Grants[grantID]
+	if !ok {
+		return fmt.Errorf("capability grant %s not found", grantID)
+	}
+	if grant.Version != expectedVersion {
+		return fmt.Errorf("capability grant %s version conflict: expected %d, got %d", grantID, expectedVersion, grant.Version)
+	}
+	now := time.Now().UTC()
+	grant.Status = capabilitydomain.GrantStatusRevoked
+	grant.RevokedAt = &now
+	grant.RevokedBy = revokedBy
+	grant.RevocationReason = reason
+	grant.Version = grant.Version + 1
+	r.Grants[grantID] = grant
+	return nil
 }
 
 func externalIdentityKey(issuer, subject string) string { return issuer + "\x00" + subject }

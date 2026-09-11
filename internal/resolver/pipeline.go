@@ -24,6 +24,16 @@ type ResolutionRequest struct {
 	Candidates        []domain.Mapping
 	Bindings          []CapabilityBinding
 	EngineInstances   []EngineInstance
+	// Grants and Scopes feed the entitlement gate (ADR-BCP-003 §9, §34 step
+	// 2), checked before any CapabilityBinding is considered. Grants is nil
+	// by default and the gate is skipped entirely when it is nil: no
+	// backfill of capability.capability_grant exists yet for any
+	// tenant/capability, so unconditionally enforcing entitlement today
+	// would fail every resolution in a real deployment. A caller passes a
+	// non-nil Grants slice (even an empty one, meaning "none found") to
+	// opt into real enforcement once grant data exists for it.
+	Grants []capabilitydomain.CapabilityGrant
+	Scopes map[string]capabilitydomain.CapabilityScope
 }
 
 // ResolutionResult is the final output from the composed resolver pipeline.
@@ -75,6 +85,22 @@ func (ResolutionPipeline) Resolve(ctx context.Context, req ResolutionRequest) (R
 		return ResolutionResult{}, resolutionFailure(trace, errors.New("mapping tenant does not match request tenant"))
 	}
 	trace.MappingID = mappingResult.Mapping.ID
+
+	if req.Grants != nil {
+		entitlementResult, err := EntitlementResolverImpl{}.Resolve(ctx, EntitlementResolutionQuery{
+			CapabilityKey: "baobab_trade",
+			Context:       req.Context,
+			Grants:        req.Grants,
+			Scopes:        req.Scopes,
+		})
+		if err != nil {
+			return ResolutionResult{}, resolutionFailure(trace, err)
+		}
+		if !entitlementResult.Entitled {
+			return ResolutionResult{}, resolutionFailure(trace, errors.New("capability not granted"))
+		}
+		trace.GrantID = entitlementResult.GrantID
+	}
 
 	capabilityResult, err := CapabilityResolverImpl{}.Resolve(ctx, CapabilityResolutionQuery{
 		CapabilityKey: "baobab_trade",

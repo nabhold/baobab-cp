@@ -7,6 +7,7 @@ type ResolutionTrace struct {
 	TenantID         string
 	CapabilityKey    string
 	MappingID        string
+	GrantID          string
 	BindingID        string
 	EngineInstanceID string
 	Outcome          string
