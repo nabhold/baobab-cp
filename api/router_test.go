@@ -290,7 +290,7 @@ func TestCapabilitiesResolveBatchRouteIsRegistered(t *testing.T) {
 }
 
 func TestCapabilitiesExplainRouteIsRegistered(t *testing.T) {
-	explainAdmin := auth.Principal{Subject: "admin-explain", ActorType: "admin", TokenID: "token-explain", Scopes: map[string]struct{}{"capabilities:explain": {}}}
+	explainAdmin := auth.Principal{Subject: "admin-explain", ActorType: "human", TokenID: "token-explain", Scopes: map[string]struct{}{"capabilities:explain": {}}}
 	handler := New(Dependencies{
 		Store:         &fakeStore{},
 		AdminVerifier: fakeVerifier{principal: explainAdmin},
@@ -343,7 +343,7 @@ func (f fakeVerifier) Verify(context.Context, string) (auth.Principal, error) {
 }
 
 func adminPrincipal() auth.Principal {
-	return auth.Principal{Subject: "admin-123", ActorType: "admin", TokenID: "token-123", Scopes: map[string]struct{}{"tenant:write": {}, "tenant:read": {}, "canonical:write": {}, "canonical:read": {}}}
+	return auth.Principal{Subject: "admin-123", ActorType: "human", TokenID: "token-123", Scopes: map[string]struct{}{"tenant:write": {}, "tenant:read": {}, "canonical:write": {}, "canonical:read": {}}}
 }
 
 func workloadPrincipal() auth.Principal {

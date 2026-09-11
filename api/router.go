@@ -61,12 +61,12 @@ func New(dependencies Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	r.Get("/readyz", a.ready)
-	r.With(a.authorize(a.adminVerifier, "admin", "tenant:write")).Post("/v1/tenants", a.register)
-	r.With(a.authorize(a.adminVerifier, "admin", "tenant:read")).Get("/v1/tenants/{tenantID}", a.getTenant)
-	r.With(a.authorize(a.adminVerifier, "admin", "tenant:write")).Post("/v1/tenants/{tenantID}/suspend", a.tenantLifecycleAction("suspend"))
-	r.With(a.authorize(a.adminVerifier, "admin", "tenant:write")).Post("/v1/tenants/{tenantID}/activate", a.tenantLifecycleAction("activate"))
-	r.With(a.authorize(a.adminVerifier, "admin", "tenant:write")).Post("/v1/tenants/{tenantID}/decommission", a.tenantLifecycleAction("decommission"))
-	r.With(a.authorize(a.adminVerifier, "admin", "tenant:read")).Get("/v1/entitlements", a.getEntitlement)
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants", a.register)
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:read")).Get("/v1/tenants/{tenantID}", a.getTenant)
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants/{tenantID}/suspend", a.tenantLifecycleAction("suspend"))
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants/{tenantID}/activate", a.tenantLifecycleAction("activate"))
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants/{tenantID}/decommission", a.tenantLifecycleAction("decommission"))
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:read")).Get("/v1/entitlements", a.getEntitlement)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/context/resolve", a.resolveContext)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/resolve", ResolverHandler{Service: a.resolution, ContextResolution: contextResolution}.Resolve)
 	// ADR-BCP-004/003 Runtime APIs (issue #74 sub-work item 6), deliberately
@@ -80,12 +80,12 @@ func New(dependencies Dependencies) http.Handler {
 	// distinct scope from the workload resolve endpoints above -- see
 	// CapabilityExplainHandler's doc comment for why it deliberately is not
 	// tenant-scoped to the calling principal.
-	r.With(a.authorize(a.adminVerifier, "admin", "capabilities:explain")).Post("/v1/capabilities/explain", CapabilityExplainHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Explain)
+	r.With(a.authorize(a.adminVerifier, "human", "capabilities:explain")).Post("/v1/capabilities/explain", CapabilityExplainHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Explain)
 	canonical := canonicalHandler{service: dependencies.Canonical}
-	r.With(a.authorize(a.adminVerifier, "admin", "canonical:write")).Post("/v1/canonical-entities", canonical.create)
-	r.With(a.authorize(a.adminVerifier, "admin", "canonical:read")).Get("/v1/canonical-entities/{entityID}", canonical.get)
+	r.With(a.authorize(a.adminVerifier, "human", "canonical:write")).Post("/v1/canonical-entities", canonical.create)
+	r.With(a.authorize(a.adminVerifier, "human", "canonical:read")).Get("/v1/canonical-entities/{entityID}", canonical.get)
 	for _, action := range []string{"validate", "activate", "suspend", "retire"} {
-		r.With(a.authorize(a.adminVerifier, "admin", "canonical:write")).Post("/v1/canonical-entities/{entityID}/"+action, canonical.lifecycle(action))
+		r.With(a.authorize(a.adminVerifier, "human", "canonical:write")).Post("/v1/canonical-entities/{entityID}/"+action, canonical.lifecycle(action))
 	}
 	return r
 }
