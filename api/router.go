@@ -75,6 +75,11 @@ func New(dependencies Dependencies) http.Handler {
 	// PlatformContextHandler's doc comment for why.
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/platform-context/resolve", PlatformContextHandler{ContextResolution: contextResolution, Contexts: dependencies.Contexts, TTL: dependencies.PlatformContextTTL}.Resolve)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/capabilities/resolve", CapabilityResolveHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Resolve)
+	// Privileged diagnostics (ADR-BCP-004 §77, ADR-BCP-003 §80): admin-only,
+	// distinct scope from the workload resolve endpoints above -- see
+	// CapabilityExplainHandler's doc comment for why it deliberately is not
+	// tenant-scoped to the calling principal.
+	r.With(a.authorize(a.adminVerifier, "admin", "capabilities:explain")).Post("/v1/capabilities/explain", CapabilityExplainHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Explain)
 	canonical := canonicalHandler{service: dependencies.Canonical}
 	r.With(a.authorize(a.adminVerifier, "admin", "canonical:write")).Post("/v1/canonical-entities", canonical.create)
 	r.With(a.authorize(a.adminVerifier, "admin", "canonical:read")).Get("/v1/canonical-entities/{entityID}", canonical.get)
