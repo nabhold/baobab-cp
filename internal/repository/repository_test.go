@@ -734,3 +734,61 @@ func TestInMemoryRepositoryDigitalEstates(t *testing.T) {
 		t.Fatalf("expected exactly two digital estates for tn_zuribeans, got %+v", estates)
 	}
 }
+
+func TestInMemoryRepositoryIsolationProfilesAndAssignments(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	schemaProfile := domain.IsolationProfile{ID: "profile-schema", Name: "Schema Per Tenant", Strategy: "schema_per_tenant", IsDefault: true}
+	if err := repo.CreateIsolationProfile(ctx, schemaProfile); err != nil {
+		t.Fatalf("create isolation profile failed: %v", err)
+	}
+	if err := repo.CreateIsolationProfile(ctx, schemaProfile); err == nil {
+		t.Fatal("expected duplicate isolation profile id to be rejected")
+	}
+	duplicateName := domain.IsolationProfile{ID: "profile-schema-2", Name: "Schema Per Tenant", Strategy: "row_level_security"}
+	if err := repo.CreateIsolationProfile(ctx, duplicateName); err == nil {
+		t.Fatal("expected duplicate isolation profile name to be rejected")
+	}
+	rlsProfile := domain.IsolationProfile{ID: "profile-rls", Name: "Row Level Security", Strategy: "row_level_security"}
+	if err := repo.CreateIsolationProfile(ctx, rlsProfile); err != nil {
+		t.Fatalf("create second isolation profile failed: %v", err)
+	}
+
+	fetched, err := repo.GetIsolationProfile(ctx, "profile-schema")
+	if err != nil {
+		t.Fatalf("get isolation profile failed: %v", err)
+	}
+	if fetched.Strategy != "schema_per_tenant" {
+		t.Fatalf("unexpected fetched isolation profile: %+v", fetched)
+	}
+	if _, err := repo.GetIsolationProfile(ctx, "missing-profile"); err == nil {
+		t.Fatal("expected missing isolation profile lookup to fail")
+	}
+
+	assignment := domain.TenantIsolationProfileAssignment{TenantID: "tn_zuribeans", IsolationProfileID: "profile-schema", EffectiveFrom: now.Add(-time.Hour)}
+	if err := repo.AssignIsolationProfileToTenant(ctx, assignment); err != nil {
+		t.Fatalf("assign isolation profile failed: %v", err)
+	}
+
+	// Same tenant, a *different* profile, overlapping period -> still
+	// rejected: unlike market assignments, the exclusion is on tenant_id
+	// alone, not tenant_id+profile_id.
+	overlapping := domain.TenantIsolationProfileAssignment{TenantID: "tn_zuribeans", IsolationProfileID: "profile-rls", EffectiveFrom: now}
+	if err := repo.AssignIsolationProfileToTenant(ctx, overlapping); !errors.Is(err, ErrTenantIsolationProfileOverlap) {
+		t.Fatalf("expected ErrTenantIsolationProfileOverlap, got %v", err)
+	}
+
+	current, err := repo.GetCurrentIsolationProfileForTenant(ctx, "tn_zuribeans", now)
+	if err != nil {
+		t.Fatalf("get current isolation profile failed: %v", err)
+	}
+	if current.ID != "profile-schema" {
+		t.Fatalf("unexpected current isolation profile: %+v", current)
+	}
+
+	if _, err := repo.GetCurrentIsolationProfileForTenant(ctx, "tn_other", now); err == nil {
+		t.Fatal("expected no active isolation profile assignment for an unassigned tenant")
+	}
+}

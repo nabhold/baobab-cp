@@ -59,6 +59,8 @@ var _ ContextWriter = (*PostgresRepository)(nil)
 var _ ContextStore = (*PostgresRepository)(nil)
 var _ DigitalEstateRepository = (*PostgresRepository)(nil)
 var _ DigitalEstateWriter = (*PostgresRepository)(nil)
+var _ IsolationProfileRepository = (*PostgresRepository)(nil)
+var _ IsolationProfileWriter = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -1379,6 +1381,87 @@ func (r *PostgresRepository) ListDigitalEstatesForTenant(ctx context.Context, te
 		return nil, err
 	}
 	return out, nil
+}
+
+// CreateIsolationProfile persists an IsolationProfile (ADR-BCP-004 §4/§55,
+// policy.isolation_profile -- migration 000004, previously unread/unwritten
+// by any Go code). profile.ID is expected to already be a caller-minted
+// UUIDv7, matching every other first-class resource this repository
+// creates.
+func (r *PostgresRepository) CreateIsolationProfile(ctx context.Context, profile domain.IsolationProfile) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := profile.Validate(); err != nil {
+		return fmt.Errorf("validate isolation profile: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO policy.isolation_profile(isolation_profile_id, name, strategy, tenant_scope, data_partitioning, is_default)
+		VALUES ($1::uuid, $2, $3, COALESCE(NULLIF($4, ''), 'tenant'), COALESCE(NULLIF($5, ''), 'per_tenant'), $6)`,
+		profile.ID, profile.Name, profile.Strategy, profile.TenantScope, profile.DataPartitioning, profile.IsDefault,
+	)
+	return err
+}
+
+func (r *PostgresRepository) GetIsolationProfile(ctx context.Context, id string) (domain.IsolationProfile, error) {
+	if r == nil || r.pool == nil {
+		return domain.IsolationProfile{}, errors.New("repository is not initialized")
+	}
+	var p domain.IsolationProfile
+	err := r.pool.QueryRow(ctx, `
+		SELECT isolation_profile_id::text, name, strategy, tenant_scope, data_partitioning, is_default
+		FROM policy.isolation_profile WHERE isolation_profile_id = $1::uuid`, id,
+	).Scan(&p.ID, &p.Name, &p.Strategy, &p.TenantScope, &p.DataPartitioning, &p.IsDefault)
+	if err != nil {
+		return domain.IsolationProfile{}, fmt.Errorf("get isolation profile %s: %w", id, err)
+	}
+	return p, nil
+}
+
+// AssignIsolationProfileToTenant persists a TenantIsolationProfileAssignment.
+// A pre-existing assignment for the same tenant with an overlapping
+// validity period is rejected by tenant_isolation_profile_active_excl
+// (migration 000024) and surfaced as ErrTenantIsolationProfileOverlap,
+// mirroring AssignMarketToTenant's identical handling of the analogous
+// market_assignment_active_excl violation.
+func (r *PostgresRepository) AssignIsolationProfileToTenant(ctx context.Context, assignment domain.TenantIsolationProfileAssignment) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := assignment.Validate(); err != nil {
+		return fmt.Errorf("validate tenant isolation profile assignment: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO policy.tenant_isolation_profile(tenant_id, isolation_profile_id, effective_from, effective_to)
+		VALUES ($1, $2::uuid, $3, $4)`,
+		assignment.TenantID, assignment.IsolationProfileID, assignment.EffectiveFrom, assignment.EffectiveTo,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23P01" {
+			return fmt.Errorf("%w: tenant %s", ErrTenantIsolationProfileOverlap, assignment.TenantID)
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *PostgresRepository) GetCurrentIsolationProfileForTenant(ctx context.Context, tenantID string, at time.Time) (domain.IsolationProfile, error) {
+	if r == nil || r.pool == nil {
+		return domain.IsolationProfile{}, errors.New("repository is not initialized")
+	}
+	var p domain.IsolationProfile
+	err := r.pool.QueryRow(ctx, `
+		SELECT ip.isolation_profile_id::text, ip.name, ip.strategy, ip.tenant_scope, ip.data_partitioning, ip.is_default
+		FROM policy.tenant_isolation_profile tip
+		JOIN policy.isolation_profile ip ON ip.isolation_profile_id = tip.isolation_profile_id
+		WHERE tip.tenant_id = $1 AND tip.effective_from <= $2 AND (tip.effective_to IS NULL OR tip.effective_to > $2)`,
+		tenantID, at,
+	).Scan(&p.ID, &p.Name, &p.Strategy, &p.TenantScope, &p.DataPartitioning, &p.IsDefault)
+	if err != nil {
+		return domain.IsolationProfile{}, fmt.Errorf("get current isolation profile for tenant %s: %w", tenantID, err)
+	}
+	return p, nil
 }
 
 func (r *PostgresRepository) Ping(ctx context.Context) error {
