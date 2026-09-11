@@ -275,6 +275,20 @@ func TestCapabilitiesResolveRouteIsRegistered(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesResolveBatchRouteIsRegistered(t *testing.T) {
+	handler := New(Dependencies{
+		Store:            &fakeStore{},
+		WorkloadVerifier: fakeVerifier{principal: workloadPrincipal()},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/capabilities/resolve-batch", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer workload-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected registered capabilities-resolve-batch route to reject empty input with 400, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestCanonicalEntityLifecycleRoutes(t *testing.T) {
 	canonical := service.CanonicalEntityService{Repository: repository.NewCanonicalRepository()}
 	handler := New(Dependencies{Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: adminPrincipal()}, Canonical: canonical})
