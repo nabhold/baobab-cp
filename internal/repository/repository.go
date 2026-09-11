@@ -130,6 +130,20 @@ type ContextStore interface {
 	ContextWriter
 }
 
+// DigitalEstateRepository is the read contract for digital estates
+// (ADR-BCP-004 §4/§55, estate.digital_estate -- migration 000007). The
+// table has existed since early in this codebase's history; this and
+// DigitalEstateWriter are the first Go code to read or write it.
+type DigitalEstateRepository interface {
+	GetDigitalEstate(ctx context.Context, id string) (domain.DigitalEstate, error)
+	ListDigitalEstatesForTenant(ctx context.Context, tenantID string) ([]domain.DigitalEstate, error)
+}
+
+// DigitalEstateWriter is the mutable digital-estate contract.
+type DigitalEstateWriter interface {
+	CreateDigitalEstate(ctx context.Context, estate domain.DigitalEstate) error
+}
+
 // ErrIdentityNotFound is returned by ResolveIdentity when no ExternalIdentity
 // exists for the given (issuer, subject) pair -- ADR-0004 §11's "absent"
 // branch of identity resolution, distinct from a repository failure, so
@@ -299,6 +313,7 @@ type Repository struct {
 	ExternalIdentities     map[string]domain.ExternalIdentity                 // keyed by "issuer\x00subject", mirroring UNIQUE(issuer, subject)
 	IdentityReferences     map[string]domain.IdentityReference                // keyed by "engine\x00external_type\x00external_id", mirroring UNIQUE(engine, external_type, external_id)
 	Contexts               map[string]domain.Context                          // keyed by ID
+	DigitalEstates         map[string]domain.DigitalEstate                    // keyed by ID
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -358,6 +373,8 @@ var _ IdentityMergeRepository = (*Repository)(nil)
 var _ ContextRepository = (*Repository)(nil)
 var _ ContextWriter = (*Repository)(nil)
 var _ ContextStore = (*Repository)(nil)
+var _ DigitalEstateRepository = (*Repository)(nil)
+var _ DigitalEstateWriter = (*Repository)(nil)
 
 func NewInMemoryRepository() *Repository {
 	return &Repository{
@@ -373,6 +390,7 @@ func NewInMemoryRepository() *Repository {
 		ExternalIdentities:     map[string]domain.ExternalIdentity{},
 		IdentityReferences:     map[string]domain.IdentityReference{},
 		Contexts:               map[string]domain.Context{},
+		DigitalEstates:         map[string]domain.DigitalEstate{},
 	}
 }
 
@@ -946,4 +964,50 @@ func (r *Repository) DeleteContextsByTenant(_ context.Context, tenantID string) 
 		}
 	}
 	return removed, nil
+}
+
+func (r *Repository) CreateDigitalEstate(_ context.Context, estate domain.DigitalEstate) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := estate.Validate(); err != nil {
+		return fmt.Errorf("validate digital estate: %w", err)
+	}
+	if estate.ID == "" {
+		return errors.New("digital estate id is required")
+	}
+	if _, exists := r.DigitalEstates[estate.ID]; exists {
+		return fmt.Errorf("digital estate %s already exists", estate.ID)
+	}
+	for _, existing := range r.DigitalEstates {
+		if existing.Domain == estate.Domain {
+			return fmt.Errorf("digital estate domain %q is already in use", estate.Domain)
+		}
+	}
+	r.DigitalEstates[estate.ID] = estate
+	return nil
+}
+
+func (r *Repository) GetDigitalEstate(_ context.Context, id string) (domain.DigitalEstate, error) {
+	if r == nil {
+		return domain.DigitalEstate{}, errors.New("repository is nil")
+	}
+	estate, ok := r.DigitalEstates[id]
+	if !ok {
+		return domain.DigitalEstate{}, fmt.Errorf("digital estate %s not found", id)
+	}
+	return estate, nil
+}
+
+func (r *Repository) ListDigitalEstatesForTenant(_ context.Context, tenantID string) ([]domain.DigitalEstate, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var out []domain.DigitalEstate
+	for _, estate := range r.DigitalEstates {
+		if estate.TenantID == tenantID {
+			out = append(out, estate)
+		}
+	}
+	return out, nil
 }
