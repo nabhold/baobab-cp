@@ -220,6 +220,56 @@ func TestResolverRouteIsRegistered(t *testing.T) {
 	}
 }
 
+// TestPlatformContextRouteIsRegisteredDistinctFromLegacyContextResolve is a
+// regression test for the naming collision PlatformContextHandler's doc
+// comment describes: /v1/context/resolve (the pre-existing, unrelated
+// tenant+product entitlement endpoint) must keep working exactly as before,
+// while the new ADR-BCP-004 PlatformContext resolver lives at its own path
+// and is independently reachable.
+func TestPlatformContextRouteIsRegisteredDistinctFromLegacyContextResolve(t *testing.T) {
+	store := &fakeStore{}
+	handler := New(Dependencies{
+		Store:            store,
+		WorkloadVerifier: fakeVerifier{principal: workloadPrincipal()},
+	})
+
+	legacyReq := httptest.NewRequest(http.MethodPost, "/v1/context/resolve", strings.NewReader(`{"product_id":"baobab_trade"}`))
+	legacyReq.Header.Set("Authorization", "Bearer workload-token")
+	legacyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(legacyResponse, legacyReq)
+	if legacyResponse.Code != http.StatusOK {
+		t.Fatalf("expected the pre-existing /v1/context/resolve to keep working, got %d: %s", legacyResponse.Code, legacyResponse.Body.String())
+	}
+	if store.resolvedCalls != 1 {
+		t.Fatalf("expected the legacy handler to have been called, got %d calls", store.resolvedCalls)
+	}
+
+	// No Identity dependency is configured, so the new route fails closed on
+	// identity resolution rather than 404/405 -- either way proves the route
+	// is registered and distinct from the legacy one above.
+	newReq := httptest.NewRequest(http.MethodPost, "/v1/platform-context/resolve", nil)
+	newReq.Header.Set("Authorization", "Bearer workload-token")
+	newResponse := httptest.NewRecorder()
+	handler.ServeHTTP(newResponse, newReq)
+	if newResponse.Code == http.StatusNotFound || newResponse.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("expected /v1/platform-context/resolve to be a registered route, got %d: %s", newResponse.Code, newResponse.Body.String())
+	}
+}
+
+func TestCapabilitiesResolveRouteIsRegistered(t *testing.T) {
+	handler := New(Dependencies{
+		Store:            &fakeStore{},
+		WorkloadVerifier: fakeVerifier{principal: workloadPrincipal()},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/capabilities/resolve", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer workload-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected registered capabilities-resolve route to reject empty input with 400, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestCanonicalEntityLifecycleRoutes(t *testing.T) {
 	canonical := service.CanonicalEntityService{Repository: repository.NewCanonicalRepository()}
 	handler := New(Dependencies{Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: adminPrincipal()}, Canonical: canonical})
