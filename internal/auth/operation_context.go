@@ -34,6 +34,13 @@ func NewOperationContext(parent context.Context, principal Principal, principalI
 		return nil, domain.Context{}, errors.New("resolved canonical principal id is required")
 	}
 	resolved := domain.Context{
+		// ADR-BCP-004 §70: "Every successfully resolved context SHALL
+		// receive: context_id" -- it enables audit, traceability,
+		// resolution correlation, incident investigation and cross-engine
+		// observability. This was previously never set, leaving every
+		// trusted Context this function ever produced (the real trusted
+		// context every /v1/resolve call uses) with an empty ID.
+		ID:            domain.NewUUIDv7(),
 		PrincipalID:   principalID,
 		TenantID:      principal.TenantID,
 		CorrelationID: correlationID,

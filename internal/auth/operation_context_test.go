@@ -18,6 +18,11 @@ func TestOperationContextUsesVerifiedPrincipalIdentity(t *testing.T) {
 	if resolved.TenantID != principal.TenantID || resolved.PrincipalID != "principal-abc" {
 		t.Fatal("operation Context did not preserve resolved canonical principal identity")
 	}
+	// ADR-BCP-004 §70: every successfully resolved context SHALL receive a
+	// context_id -- this was previously never set.
+	if resolved.ID == "" {
+		t.Fatal("resolved Context has no context_id")
+	}
 	propagated, ok := OperationContextFromContext(ctx)
 	if !ok || propagated.TenantID != principal.TenantID || !propagated.ResolvedAt.Equal(now) {
 		t.Fatal("operation Context was not propagated immutably")

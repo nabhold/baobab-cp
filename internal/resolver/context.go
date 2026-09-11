@@ -37,6 +37,10 @@ type ResolutionEvidence struct {
 	Locale         string
 	CorrelationID  string
 	Provenance     map[string]ContextSource
+	// TTL, when positive, bounds the resolved Context's lifetime
+	// (ADR-BCP-004 §72). Zero (the default) leaves it unbounded, matching
+	// this resolver's behavior before ExpiresAt existed.
+	TTL time.Duration
 }
 
 // ContextResolverImpl resolves runtime context using supplied evidence and trust metadata.
@@ -61,7 +65,11 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 			evidence.Provenance[key] = value
 		}
 	}
+	resolvedAt := time.Now().UTC()
 	resolved := Context{
+		// ADR-BCP-004 §70: every successfully resolved context SHALL
+		// receive a context_id.
+		ID:             domain.NewUUIDv7(),
 		PrincipalID:    evidence.PrincipalID,
 		TenantID:       evidence.TenantID,
 		LegalEntityID:  evidence.LegalEntityID,
@@ -72,8 +80,15 @@ func (ContextResolverImpl) Resolve(ctx context.Context, evidence ResolutionEvide
 		CurrencyCode:   evidence.CurrencyCode,
 		Locale:         evidence.Locale,
 		CorrelationID:  evidence.CorrelationID,
-		ResolvedAt:     time.Now().UTC(),
+		ResolvedAt:     resolvedAt,
 		Provenance:     evidence.Provenance,
+	}
+	// §72: "Context MAY have bounded lifetime." TTL is opt-in per request
+	// via evidence; zero (the default) leaves ExpiresAt unset, matching
+	// this function's prior unbounded behavior exactly.
+	if evidence.TTL > 0 {
+		expiresAt := resolvedAt.Add(evidence.TTL)
+		resolved.ExpiresAt = &expiresAt
 	}
 	if err := resolved.Validate(); err != nil {
 		return Context{}, err
