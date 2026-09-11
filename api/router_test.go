@@ -289,6 +289,21 @@ func TestCapabilitiesResolveBatchRouteIsRegistered(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesExplainRouteIsRegistered(t *testing.T) {
+	explainAdmin := auth.Principal{Subject: "admin-explain", ActorType: "admin", TokenID: "token-explain", Scopes: map[string]struct{}{"capabilities:explain": {}}}
+	handler := New(Dependencies{
+		Store:         &fakeStore{},
+		AdminVerifier: fakeVerifier{principal: explainAdmin},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/capabilities/explain", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("expected registered capabilities-explain route to reject empty input with 400, got %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestCanonicalEntityLifecycleRoutes(t *testing.T) {
 	canonical := service.CanonicalEntityService{Repository: repository.NewCanonicalRepository()}
 	handler := New(Dependencies{Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: adminPrincipal()}, Canonical: canonical})
