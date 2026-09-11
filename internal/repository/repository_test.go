@@ -734,3 +734,73 @@ func TestInMemoryRepositoryDigitalEstates(t *testing.T) {
 		t.Fatalf("expected exactly two digital estates for tn_zuribeans, got %+v", estates)
 	}
 }
+
+func TestInMemoryRepositoryMarketsAndAssignments(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	za := domain.Market{ID: "market-za", Code: "ZA", Name: "South Africa", Currency: "ZAR", Region: "af-south-1", IsActive: true}
+	if err := repo.CreateMarket(ctx, za); err != nil {
+		t.Fatalf("create market failed: %v", err)
+	}
+	if err := repo.CreateMarket(ctx, za); err == nil {
+		t.Fatal("expected duplicate market id to be rejected")
+	}
+	duplicateCode := domain.Market{ID: "market-za-2", Code: "ZA", Name: "Duplicate", Currency: "ZAR", Region: "af-south-1"}
+	if err := repo.CreateMarket(ctx, duplicateCode); err == nil {
+		t.Fatal("expected duplicate market code to be rejected")
+	}
+	ke := domain.Market{ID: "market-ke", Code: "KE", Name: "Kenya", Currency: "KES", Region: "af-east-1", IsActive: true}
+	if err := repo.CreateMarket(ctx, ke); err != nil {
+		t.Fatalf("create second market failed: %v", err)
+	}
+
+	fetched, err := repo.GetMarket(ctx, "market-za")
+	if err != nil {
+		t.Fatalf("get market failed: %v", err)
+	}
+	if fetched.Code != "ZA" {
+		t.Fatalf("unexpected fetched market: %+v", fetched)
+	}
+	if _, err := repo.GetMarketByCode(ctx, "KE"); err != nil {
+		t.Fatalf("get market by code failed: %v", err)
+	}
+	if _, err := repo.GetMarketByCode(ctx, "NG"); err == nil {
+		t.Fatal("expected an unknown market code lookup to fail")
+	}
+
+	assignment := domain.MarketAssignment{ID: "assignment-1", TenantID: "tn_zuribeans", MarketID: "market-za", EffectiveFrom: now.Add(-time.Hour)}
+	if err := repo.AssignMarketToTenant(ctx, assignment); err != nil {
+		t.Fatalf("assign market failed: %v", err)
+	}
+
+	// Same tenant/market, overlapping (unbounded) period -> rejected.
+	overlapping := domain.MarketAssignment{ID: "assignment-2", TenantID: "tn_zuribeans", MarketID: "market-za", EffectiveFrom: now}
+	if err := repo.AssignMarketToTenant(ctx, overlapping); !errors.Is(err, ErrMarketAssignmentOverlap) {
+		t.Fatalf("expected ErrMarketAssignmentOverlap, got %v", err)
+	}
+
+	// Same tenant, different market -> allowed to coexist.
+	otherMarket := domain.MarketAssignment{ID: "assignment-3", TenantID: "tn_zuribeans", MarketID: "market-ke", EffectiveFrom: now.Add(-time.Hour)}
+	if err := repo.AssignMarketToTenant(ctx, otherMarket); err != nil {
+		t.Fatalf("assign second market failed: %v", err)
+	}
+
+	active, err := repo.ListActiveMarketsForTenant(ctx, "tn_zuribeans", now)
+	if err != nil {
+		t.Fatalf("list active markets failed: %v", err)
+	}
+	if len(active) != 2 {
+		t.Fatalf("expected two active markets for tn_zuribeans, got %+v", active)
+	}
+
+	// Before the assignment's effective_from -> not yet active.
+	notYetActive, err := repo.ListActiveMarketsForTenant(ctx, "tn_zuribeans", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatalf("list active markets (before) failed: %v", err)
+	}
+	if len(notYetActive) != 0 {
+		t.Fatalf("expected no active markets before effective_from, got %+v", notYetActive)
+	}
+}

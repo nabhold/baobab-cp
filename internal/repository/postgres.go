@@ -59,6 +59,8 @@ var _ ContextWriter = (*PostgresRepository)(nil)
 var _ ContextStore = (*PostgresRepository)(nil)
 var _ DigitalEstateRepository = (*PostgresRepository)(nil)
 var _ DigitalEstateWriter = (*PostgresRepository)(nil)
+var _ MarketRepository = (*PostgresRepository)(nil)
+var _ MarketWriter = (*PostgresRepository)(nil)
 
 func Open(ctx context.Context, url string) (*PostgresRepository, error) {
 	pool, err := pgxpool.New(ctx, url)
@@ -1374,6 +1376,118 @@ func (r *PostgresRepository) ListDigitalEstatesForTenant(ctx context.Context, te
 		e.Status = domain.DigitalEstateStatus(status)
 		e.CreatedAt = e.CreatedAt.UTC()
 		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// CreateMarket persists a Market (ADR-BCP-004 §4/§55, market.market --
+// migration 000006, previously unread/unwritten by any Go code). market.ID
+// is expected to already be a caller-minted UUIDv7, matching every other
+// first-class resource this repository creates.
+func (r *PostgresRepository) CreateMarket(ctx context.Context, market domain.Market) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := market.Validate(); err != nil {
+		return fmt.Errorf("validate market: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO market.market(market_id, code, name, currency, region, is_active)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)`,
+		market.ID, market.Code, market.Name, market.Currency, market.Region, market.IsActive,
+	)
+	return err
+}
+
+const marketSelectColumns = `market_id::text, code, name, currency, region, is_active`
+
+func scanMarket(row interface {
+	Scan(dest ...any) error
+}) (domain.Market, error) {
+	var m domain.Market
+	err := row.Scan(&m.ID, &m.Code, &m.Name, &m.Currency, &m.Region, &m.IsActive)
+	if err != nil {
+		return domain.Market{}, err
+	}
+	return m, nil
+}
+
+func (r *PostgresRepository) GetMarket(ctx context.Context, id string) (domain.Market, error) {
+	if r == nil || r.pool == nil {
+		return domain.Market{}, errors.New("repository is not initialized")
+	}
+	market, err := scanMarket(r.pool.QueryRow(ctx, `SELECT `+marketSelectColumns+` FROM market.market WHERE market_id = $1::uuid`, id))
+	if err != nil {
+		return domain.Market{}, fmt.Errorf("get market %s: %w", id, err)
+	}
+	return market, nil
+}
+
+func (r *PostgresRepository) GetMarketByCode(ctx context.Context, code string) (domain.Market, error) {
+	if r == nil || r.pool == nil {
+		return domain.Market{}, errors.New("repository is not initialized")
+	}
+	market, err := scanMarket(r.pool.QueryRow(ctx, `SELECT `+marketSelectColumns+` FROM market.market WHERE code = $1`, code))
+	if err != nil {
+		return domain.Market{}, fmt.Errorf("get market with code %s: %w", code, err)
+	}
+	return market, nil
+}
+
+// AssignMarketToTenant persists a MarketAssignment. A pre-existing
+// assignment for the same (tenant_id, market_id) pair with an overlapping
+// validity period is rejected by market_assignment_active_excl (migration
+// 000024) and surfaced as ErrMarketAssignmentOverlap, mirroring how
+// CreateMapping already surfaces ErrMappingOverlap for the analogous
+// canonical_mapping_source_type_active_excl violation.
+func (r *PostgresRepository) AssignMarketToTenant(ctx context.Context, assignment domain.MarketAssignment) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := assignment.Validate(); err != nil {
+		return fmt.Errorf("validate market assignment: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO market.market_assignment(market_assignment_id, tenant_id, market_id, effective_from, effective_to)
+		VALUES ($1::uuid, $2, $3::uuid, $4, $5)`,
+		assignment.ID, assignment.TenantID, assignment.MarketID, assignment.EffectiveFrom, assignment.EffectiveTo,
+	)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23P01" {
+			return fmt.Errorf("%w: tenant %s, market %s", ErrMarketAssignmentOverlap, assignment.TenantID, assignment.MarketID)
+		}
+		return err
+	}
+	return nil
+}
+
+func (r *PostgresRepository) ListActiveMarketsForTenant(ctx context.Context, tenantID string, at time.Time) ([]domain.Market, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT m.market_id::text, m.code, m.name, m.currency, m.region, m.is_active
+		FROM market.market_assignment ma
+		JOIN market.market m ON m.market_id = ma.market_id
+		WHERE ma.tenant_id = $1 AND ma.effective_from <= $2 AND (ma.effective_to IS NULL OR ma.effective_to > $2)`,
+		tenantID, at,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.Market
+	for rows.Next() {
+		market, err := scanMarket(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, market)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
