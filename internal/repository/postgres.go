@@ -545,6 +545,31 @@ func (r *PostgresRepository) SetWorkforceMembershipStatus(ctx context.Context, m
 	return nil
 }
 
+func (r *PostgresRepository) SetWorkforceMembershipRoles(ctx context.Context, membershipID string, roles []string) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if len(roles) == 0 {
+		return errors.New("at least one role is required")
+	}
+	for _, role := range roles {
+		if role == "" {
+			return errors.New("role must not be empty")
+		}
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE identity.workforce_membership
+		SET roles = $2, updated_at = now()
+		WHERE membership_id = $1::uuid`, membershipID, roles)
+	if err != nil {
+		return fmt.Errorf("set workforce membership roles: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrWorkforceMembershipNotFound
+	}
+	return nil
+}
+
 // LinkExternalIdentityAudited implements IdentityLinkingRepository: it
 // links a second ExternalIdentity to an already-existing Principal and
 // writes an audit_events row in the same transaction (ADR-0004 §16), so a
@@ -763,15 +788,81 @@ func (r *PostgresRepository) MergePrincipalsAudited(ctx context.Context, sourceP
 		return fmt.Errorf("transfer identity references: %w", refRowsErr)
 	}
 
+	// Workforce memberships (ADR-0009 §27): a source membership transfers
+	// to the target unless the target already belongs to that same tenant,
+	// in which case transferring would create a second row for the same
+	// (principal, tenant) pair -- exactly what UNIQUE(principal_id,
+	// tenant_id) (migration 000032) rejects. Since requireAdminRole
+	// (api/router.go) resolves a token's issuer+subject to the target
+	// principal after the merge, an unreconciled source membership would
+	// otherwise be stranded on the now-archived source and silently lose
+	// the merged administrator's tenant access -- so a conflicting source
+	// row is disabled in place (audit-visible, not deleted) rather than
+	// left dangling, and the target's own existing membership for that
+	// tenant remains authoritative. Order between the two statements below
+	// doesn't matter: each targets a disjoint partition of the source's
+	// rows (by whether their tenant is one of the target's pre-existing
+	// tenants), and neither touches the target's own rows.
+	disabledRows, err := tx.Query(ctx, `
+		UPDATE identity.workforce_membership AS src
+		SET status = 'DISABLED', updated_at = now()
+		WHERE src.principal_id = $1::uuid
+		  AND src.tenant_id IN (SELECT tenant_id FROM identity.workforce_membership WHERE principal_id = $2::uuid)
+		RETURNING src.tenant_id, src.roles`, sourcePrincipalID, targetPrincipalID)
+	if err != nil {
+		return fmt.Errorf("disable conflicting workforce memberships: %w", err)
+	}
+	var disabledMemberships []map[string]any
+	for disabledRows.Next() {
+		var tenantID string
+		var roles []string
+		if err := disabledRows.Scan(&tenantID, &roles); err != nil {
+			disabledRows.Close()
+			return fmt.Errorf("scan disabled workforce membership: %w", err)
+		}
+		disabledMemberships = append(disabledMemberships, map[string]any{"tenant_id": tenantID, "roles": roles})
+	}
+	disabledRowsErr := disabledRows.Err()
+	disabledRows.Close()
+	if disabledRowsErr != nil {
+		return fmt.Errorf("disable conflicting workforce memberships: %w", disabledRowsErr)
+	}
+
+	membershipRows, err := tx.Query(ctx, `
+		UPDATE identity.workforce_membership SET principal_id = $2::uuid, updated_at = now()
+		WHERE principal_id = $1::uuid
+		  AND tenant_id NOT IN (SELECT tenant_id FROM identity.workforce_membership WHERE principal_id = $2::uuid)
+		RETURNING tenant_id, roles`, sourcePrincipalID, targetPrincipalID)
+	if err != nil {
+		return fmt.Errorf("transfer workforce memberships: %w", err)
+	}
+	var transferredMemberships []map[string]any
+	for membershipRows.Next() {
+		var tenantID string
+		var roles []string
+		if err := membershipRows.Scan(&tenantID, &roles); err != nil {
+			membershipRows.Close()
+			return fmt.Errorf("scan transferred workforce membership: %w", err)
+		}
+		transferredMemberships = append(transferredMemberships, map[string]any{"tenant_id": tenantID, "roles": roles})
+	}
+	membershipRowsErr := membershipRows.Err()
+	membershipRows.Close()
+	if membershipRowsErr != nil {
+		return fmt.Errorf("transfer workforce memberships: %w", membershipRowsErr)
+	}
+
 	if _, err = tx.Exec(ctx, `UPDATE identity.principal SET status = 'ARCHIVED', updated_at = now() WHERE principal_id = $1::uuid`, sourcePrincipalID); err != nil {
 		return fmt.Errorf("archive source principal: %w", err)
 	}
 
 	payload, err := json.Marshal(map[string]any{
-		"source_principal_id":             sourcePrincipalID,
-		"target_principal_id":             targetPrincipalID,
-		"transferred_external_identities": transferredExternal,
-		"transferred_identity_references": transferredReferences,
+		"source_principal_id":               sourcePrincipalID,
+		"target_principal_id":               targetPrincipalID,
+		"transferred_external_identities":   transferredExternal,
+		"transferred_identity_references":   transferredReferences,
+		"transferred_workforce_memberships": transferredMemberships,
+		"disabled_workforce_memberships":    disabledMemberships,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal merge audit payload: %w", err)
