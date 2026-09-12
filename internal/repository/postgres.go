@@ -470,6 +470,81 @@ func (r *PostgresRepository) LinkExternalIdentity(ctx context.Context, external 
 	return nil
 }
 
+func (r *PostgresRepository) GetWorkforceMembership(ctx context.Context, principalID, tenantID string) (domain.WorkforceMembership, error) {
+	if r == nil || r.pool == nil {
+		return domain.WorkforceMembership{}, errors.New("repository is not initialized")
+	}
+	row := r.pool.QueryRow(ctx, `
+		SELECT membership_id::text, principal_id::text, tenant_id, COALESCE(legal_entity_id, ''), roles, status
+		FROM identity.workforce_membership
+		WHERE principal_id = $1::uuid AND tenant_id = $2`, principalID, tenantID)
+	var m domain.WorkforceMembership
+	if err := row.Scan(&m.ID, &m.PrincipalID, &m.TenantID, &m.LegalEntityID, &m.Roles, &m.Status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.WorkforceMembership{}, ErrWorkforceMembershipNotFound
+		}
+		return domain.WorkforceMembership{}, fmt.Errorf("get workforce membership: %w", err)
+	}
+	return m, nil
+}
+
+func (r *PostgresRepository) ListWorkforceMemberships(ctx context.Context, principalID string) ([]domain.WorkforceMembership, error) {
+	if r == nil || r.pool == nil {
+		return nil, errors.New("repository is not initialized")
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT membership_id::text, principal_id::text, tenant_id, COALESCE(legal_entity_id, ''), roles, status
+		FROM identity.workforce_membership
+		WHERE principal_id = $1::uuid`, principalID)
+	if err != nil {
+		return nil, fmt.Errorf("list workforce memberships: %w", err)
+	}
+	defer rows.Close()
+	var memberships []domain.WorkforceMembership
+	for rows.Next() {
+		var m domain.WorkforceMembership
+		if err := rows.Scan(&m.ID, &m.PrincipalID, &m.TenantID, &m.LegalEntityID, &m.Roles, &m.Status); err != nil {
+			return nil, fmt.Errorf("scan workforce membership: %w", err)
+		}
+		memberships = append(memberships, m)
+	}
+	return memberships, rows.Err()
+}
+
+func (r *PostgresRepository) CreateWorkforceMembership(ctx context.Context, membership domain.WorkforceMembership) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if err := membership.Validate(); err != nil {
+		return fmt.Errorf("validate workforce membership: %w", err)
+	}
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO identity.workforce_membership(membership_id, principal_id, tenant_id, legal_entity_id, roles, status)
+		VALUES ($1::uuid, $2::uuid, $3, NULLIF($4, ''), $5, $6)`,
+		membership.ID, membership.PrincipalID, membership.TenantID, membership.LegalEntityID, membership.Roles, membership.Status)
+	return err
+}
+
+func (r *PostgresRepository) SetWorkforceMembershipStatus(ctx context.Context, membershipID, status string) error {
+	if r == nil || r.pool == nil {
+		return errors.New("repository is not initialized")
+	}
+	if !domain.ValidWorkforceMembershipStatus(status) {
+		return errors.New("status must be ACTIVE, SUSPENDED or DISABLED")
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE identity.workforce_membership
+		SET status = $2, updated_at = now()
+		WHERE membership_id = $1::uuid`, membershipID, status)
+	if err != nil {
+		return fmt.Errorf("set workforce membership status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrWorkforceMembershipNotFound
+	}
+	return nil
+}
+
 // LinkExternalIdentityAudited implements IdentityLinkingRepository: it
 // links a second ExternalIdentity to an already-existing Principal and
 // writes an audit_events row in the same transaction (ADR-0004 §16), so a

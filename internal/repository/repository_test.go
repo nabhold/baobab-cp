@@ -862,3 +862,79 @@ func TestInMemoryRepositoryIsolationProfilesAndAssignments(t *testing.T) {
 		t.Fatal("expected no active isolation profile assignment for an unassigned tenant")
 	}
 }
+
+// TestInMemoryRepositoryWorkforceMembership exercises Gate IAM-5 phase 3's
+// WorkforceMembershipRepository against ADR-0009 §27-32: an unknown
+// (principalID, tenantID) returns ErrWorkforceMembershipNotFound, creating
+// a membership requires an existing Principal (§29's no-JIT-provisioning
+// invariant applies here too -- a membership is never implicitly
+// materialized), ListWorkforceMemberships returns every tenant a Principal
+// belongs to, and SetWorkforceMembershipStatus performs a status-only
+// mover/leaver transition rather than rewriting roles (§31-32).
+func TestInMemoryRepositoryWorkforceMembership(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	if _, err := repo.GetWorkforceMembership(ctx, "does-not-exist", "tn_zuribeans"); !errors.Is(err, ErrWorkforceMembershipNotFound) {
+		t.Fatalf("expected ErrWorkforceMembershipNotFound for unknown membership, got %v", err)
+	}
+
+	orphan := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: "does-not-exist", TenantID: "tn_zuribeans", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, orphan); err == nil {
+		t.Fatal("expected creating a membership for a nonexistent principal to be rejected")
+	}
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+
+	membership := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: principal.ID, TenantID: "tn_zuribeans", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, membership); err != nil {
+		t.Fatalf("create workforce membership failed: %v", err)
+	}
+	if err := repo.CreateWorkforceMembership(ctx, membership); err == nil {
+		t.Fatal("expected duplicate membership id to be rejected")
+	}
+
+	resolved, err := repo.GetWorkforceMembership(ctx, principal.ID, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("get workforce membership failed: %v", err)
+	}
+	if resolved.Status != "ACTIVE" || !resolved.HasRole("cp:tenant-admin") {
+		t.Fatalf("unexpected resolved membership: %+v", resolved)
+	}
+
+	second := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: principal.ID, TenantID: "tn_thamani", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, second); err != nil {
+		t.Fatalf("create second workforce membership failed: %v", err)
+	}
+	memberships, err := repo.ListWorkforceMemberships(ctx, principal.ID)
+	if err != nil {
+		t.Fatalf("list workforce memberships failed: %v", err)
+	}
+	if len(memberships) != 2 {
+		t.Fatalf("expected 2 memberships, got %d: %+v", len(memberships), memberships)
+	}
+
+	// A leaver (ADR-0009 §31-32): status changes to DISABLED, but roles are
+	// left untouched -- the audit trail of what the membership once granted
+	// is preserved rather than erased.
+	if err := repo.SetWorkforceMembershipStatus(ctx, membership.ID, "DISABLED"); err != nil {
+		t.Fatalf("set workforce membership status failed: %v", err)
+	}
+	disabled, err := repo.GetWorkforceMembership(ctx, principal.ID, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("get workforce membership after status change failed: %v", err)
+	}
+	if disabled.Status != "DISABLED" || !disabled.HasRole("cp:tenant-admin") {
+		t.Fatalf("expected status-only transition, got %+v", disabled)
+	}
+
+	if err := repo.SetWorkforceMembershipStatus(ctx, "does-not-exist", "ACTIVE"); !errors.Is(err, ErrWorkforceMembershipNotFound) {
+		t.Fatalf("expected ErrWorkforceMembershipNotFound for unknown membership id, got %v", err)
+	}
+	if err := repo.SetWorkforceMembershipStatus(ctx, membership.ID, "archived"); err == nil {
+		t.Fatal("expected an unrecognized status to be rejected")
+	}
+}

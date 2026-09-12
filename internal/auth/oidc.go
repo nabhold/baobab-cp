@@ -28,9 +28,26 @@ type Principal struct {
 	ClientID  string
 	TokenID   string
 	Scopes    map[string]struct{}
+	// Roles holds this token's Keycloak realm roles (the realm_access.roles
+	// claim) -- e.g. "cp:platform-admin", "cp:tenant-admin" (Gate IAM-5
+	// phase 1, baobab-iam). Unlike Scopes, an empty Roles is not rejected:
+	// most tokens (workloads, unprivileged humans) legitimately carry none,
+	// and Keycloak also populates this claim with unrelated default realm
+	// roles (e.g. "offline_access") that role-aware authorization simply
+	// never checks for.
+	Roles map[string]struct{}
 }
 
 func (p Principal) HasScope(scope string) bool { _, ok := p.Scopes[scope]; return ok }
+
+// HasRole reports whether this token's realm_access.roles claim carries the
+// given role. Role-aware admin authorization (api/router.go) uses this
+// together with a WorkforceMembership lookup: the realm role establishes
+// what a principal MAY do platform-wide (e.g. "cp:tenant-admin" grants
+// tenant-scoped admin capability *somewhere*), while WorkforceMembership
+// establishes WHICH tenant(s) -- a realm role alone is never sufficient for
+// a tenant-scoped action, per ADR-0009 §27/§122.
+func (p Principal) HasRole(role string) bool { _, ok := p.Roles[role]; return ok }
 
 type TokenVerifier interface {
 	Verify(context.Context, string) (Principal, error)
@@ -47,15 +64,18 @@ func NewOIDCVerifier(ctx context.Context, issuer, audience string) (*OIDCVerifie
 }
 
 type claims struct {
-	Subject   string `json:"sub"`
-	Scope     string `json:"scope"`
-	ActorType string `json:"actor_type"`
-	TenantID  string `json:"tenant_id"`
-	ClientID  string `json:"azp"`
-	TokenID   string `json:"jti"`
-	IssuedAt  int64  `json:"iat"`
-	NotBefore int64  `json:"nbf"`
-	ExpiresAt int64  `json:"exp"`
+	Subject     string `json:"sub"`
+	Scope       string `json:"scope"`
+	ActorType   string `json:"actor_type"`
+	TenantID    string `json:"tenant_id"`
+	ClientID    string `json:"azp"`
+	TokenID     string `json:"jti"`
+	IssuedAt    int64  `json:"iat"`
+	NotBefore   int64  `json:"nbf"`
+	ExpiresAt   int64  `json:"exp"`
+	RealmAccess struct {
+		Roles []string `json:"roles"`
+	} `json:"realm_access"`
 }
 
 func (v *OIDCVerifier) Verify(ctx context.Context, raw string) (Principal, error) {
@@ -94,11 +114,15 @@ func (v *OIDCVerifier) Verify(ctx context.Context, raw string) (Principal, error
 	if len(scopes) == 0 {
 		return Principal{}, fmt.Errorf("%w: scope is required", ErrInvalidToken)
 	}
+	roles := make(map[string]struct{}, len(c.RealmAccess.Roles))
+	for _, role := range c.RealmAccess.Roles {
+		roles[role] = struct{}{}
+	}
 	// ADR-0003 ("Identity Authority and Trust Boundaries"): the verified
 	// issuer is part of the identity itself — a bare `sub` is only unique
 	// within one issuer, and per ADR-0004 a stable canonical identity is
 	// ultimately keyed by (issuer, subject), not subject alone. token.Issuer
 	// comes from the verified ID token (checked against the configured
 	// provider during v.verifier.Verify above), not from an unverified claim.
-	return Principal{Subject: c.Subject, Issuer: token.Issuer, ActorType: c.ActorType, TenantID: c.TenantID, ClientID: c.ClientID, TokenID: c.TokenID, Scopes: scopes}, nil
+	return Principal{Subject: c.Subject, Issuer: token.Issuer, ActorType: c.ActorType, TenantID: c.TenantID, ClientID: c.ClientID, TokenID: c.TokenID, Scopes: scopes, Roles: roles}, nil
 }

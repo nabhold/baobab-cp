@@ -228,6 +228,52 @@ type IdentityRepository interface {
 	LinkExternalIdentity(ctx context.Context, external domain.ExternalIdentity) error
 }
 
+// ErrWorkforceMembershipNotFound is returned by GetWorkforceMembership when
+// no membership row exists for the given (principalID, tenantID) pair --
+// distinct from a repository failure so role-aware authorization (Gate
+// IAM-5 phase 3, api/router.go) can fail closed on it via errors.Is rather
+// than string-matching, matching ErrIdentityNotFound's own shape.
+var ErrWorkforceMembershipNotFound = errors.New("workforce membership not found")
+
+// WorkforceMembershipRepository is the Gate IAM-5 phase 3 contract
+// (docs/governance/gate-iam-5-workforce-sso-scope.md) for ADR-0009 §27's
+// WorkforceMembership relationship. It is deliberately read-and-lifecycle
+// only, with no auto-provisioning path analogous to IdentityService.Resolve:
+// per ADR-0009 §29 ("Privileged access SHALL not be assigned merely because
+// identity provisioning succeeded") and Gate IAM-5 phase 1's "no privileged
+// JIT provisioning" precedent, a WorkforceMembership is always created by an
+// explicit joiner action (CreateWorkforceMembership), never materialized on
+// first authentication.
+type WorkforceMembershipRepository interface {
+	// GetWorkforceMembership returns the membership row for principalID in
+	// tenantID, or ErrWorkforceMembershipNotFound if none exists. Role-aware
+	// authorization treats "not found" and "found but not ACTIVE" as the
+	// same deny decision -- callers check Status themselves rather than
+	// this method filtering by status, so an existing-but-DISABLED
+	// membership can still be inspected (e.g. by an access-review tool)
+	// without a second, status-agnostic lookup method.
+	GetWorkforceMembership(ctx context.Context, principalID, tenantID string) (domain.WorkforceMembership, error)
+	// ListWorkforceMemberships returns every membership row for
+	// principalID, across all tenants -- the mover/leaver processes
+	// (ADR-0009 §31-36) operate over a person's whole membership set, not
+	// one tenant at a time.
+	ListWorkforceMemberships(ctx context.Context, principalID string) ([]domain.WorkforceMembership, error)
+	// CreateWorkforceMembership is the joiner action (ADR-0009 §29): an
+	// explicit, deliberate grant, never implicit. Callers mint the ID via
+	// domain.NewWorkforceMembershipID() before calling, matching every
+	// other Create* method in this package.
+	CreateWorkforceMembership(ctx context.Context, membership domain.WorkforceMembership) error
+	// SetWorkforceMembershipStatus implements the mover process's "revoke
+	// obsolete privileges" step and the leaver process's "workforce
+	// membership disabled" step (ADR-0009 §31, §33) as one status
+	// transition, rather than a full membership rewrite -- Roles is
+	// intentionally not mutable through this method; a genuine role change
+	// is a new CreateWorkforceMembership plus disabling the old one, so the
+	// audit trail shows the specific grant that changed, not an in-place
+	// edit of an existing grant's shape.
+	SetWorkforceMembershipStatus(ctx context.Context, membershipID, status string) error
+}
+
 // AuditActor identifies who performed a security-sensitive identity
 // operation (linking, unlinking, merging), for the audit record ADR-0004
 // §16/§21/§52 require alongside it. Mirrors internal/store's
@@ -377,6 +423,12 @@ type Repository struct {
 	// table's PRIMARY KEY (tenant_id, isolation_profile_id, effective_from));
 	// keyed by "tenant_id\x00isolation_profile_id\x00effective_from".
 	TenantIsolationProfiles map[string]domain.TenantIsolationProfileAssignment
+	// WorkforceMemberships is keyed by ID, mirroring the real table's
+	// primary key -- unlike ExternalIdentities' composite-key map, lookups
+	// here (GetWorkforceMembership, ListWorkforceMemberships) filter by
+	// scanning, matching this package's existing pattern for
+	// multi-valued-per-owner collections (see Mappings, Bindings).
+	WorkforceMemberships map[string]domain.WorkforceMembership
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -429,6 +481,7 @@ var _ CapabilityGrantWriter = (*Repository)(nil)
 var _ CapabilityRegistryRepository = (*Repository)(nil)
 var _ CapabilityRegistryWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
+var _ WorkforceMembershipRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
 var _ IdentityUnlinkingRepository = (*Repository)(nil)
@@ -462,6 +515,7 @@ func NewInMemoryRepository() *Repository {
 		MarketAssignments:       map[string]domain.MarketAssignment{},
 		IsolationProfiles:       map[string]domain.IsolationProfile{},
 		TenantIsolationProfiles: map[string]domain.TenantIsolationProfileAssignment{},
+		WorkforceMemberships:    map[string]domain.WorkforceMembership{},
 	}
 }
 
@@ -783,6 +837,67 @@ func (r *Repository) LinkExternalIdentity(_ context.Context, external domain.Ext
 		return fmt.Errorf("issuer %s subject already linked to a principal", external.Issuer)
 	}
 	r.ExternalIdentities[key] = external
+	return nil
+}
+
+func (r *Repository) GetWorkforceMembership(_ context.Context, principalID, tenantID string) (domain.WorkforceMembership, error) {
+	if r == nil {
+		return domain.WorkforceMembership{}, errors.New("repository is nil")
+	}
+	for _, m := range r.WorkforceMemberships {
+		if m.PrincipalID == principalID && m.TenantID == tenantID {
+			return m, nil
+		}
+	}
+	return domain.WorkforceMembership{}, ErrWorkforceMembershipNotFound
+}
+
+func (r *Repository) ListWorkforceMemberships(_ context.Context, principalID string) ([]domain.WorkforceMembership, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var memberships []domain.WorkforceMembership
+	for _, m := range r.WorkforceMemberships {
+		if m.PrincipalID == principalID {
+			memberships = append(memberships, m)
+		}
+	}
+	return memberships, nil
+}
+
+func (r *Repository) CreateWorkforceMembership(_ context.Context, membership domain.WorkforceMembership) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := membership.Validate(); err != nil {
+		return fmt.Errorf("validate workforce membership: %w", err)
+	}
+	if membership.ID == "" {
+		return errors.New("workforce membership id is required")
+	}
+	if _, exists := r.Principals[membership.PrincipalID]; !exists {
+		return fmt.Errorf("principal %s does not exist", membership.PrincipalID)
+	}
+	if _, exists := r.WorkforceMemberships[membership.ID]; exists {
+		return fmt.Errorf("workforce membership %s already exists", membership.ID)
+	}
+	r.WorkforceMemberships[membership.ID] = membership
+	return nil
+}
+
+func (r *Repository) SetWorkforceMembershipStatus(_ context.Context, membershipID, status string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if !domain.ValidWorkforceMembershipStatus(status) {
+		return errors.New("status must be ACTIVE, SUSPENDED or DISABLED")
+	}
+	membership, ok := r.WorkforceMemberships[membershipID]
+	if !ok {
+		return ErrWorkforceMembershipNotFound
+	}
+	membership.Status = status
+	r.WorkforceMemberships[membershipID] = membership
 	return nil
 }
 
