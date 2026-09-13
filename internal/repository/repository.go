@@ -228,6 +228,61 @@ type IdentityRepository interface {
 	LinkExternalIdentity(ctx context.Context, external domain.ExternalIdentity) error
 }
 
+// ErrWorkforceMembershipNotFound is returned by GetWorkforceMembership when
+// no membership row exists for the given (principalID, tenantID) pair --
+// distinct from a repository failure so role-aware authorization (Gate
+// IAM-5 phase 3, api/router.go) can fail closed on it via errors.Is rather
+// than string-matching, matching ErrIdentityNotFound's own shape.
+var ErrWorkforceMembershipNotFound = errors.New("workforce membership not found")
+
+// WorkforceMembershipRepository is the Gate IAM-5 phase 3 contract
+// (docs/governance/gate-iam-5-workforce-sso-scope.md) for ADR-0009 §27's
+// WorkforceMembership relationship. It is deliberately read-and-lifecycle
+// only, with no auto-provisioning path analogous to IdentityService.Resolve:
+// per ADR-0009 §29 ("Privileged access SHALL not be assigned merely because
+// identity provisioning succeeded") and Gate IAM-5 phase 1's "no privileged
+// JIT provisioning" precedent, a WorkforceMembership is always created by an
+// explicit joiner action (CreateWorkforceMembership), never materialized on
+// first authentication.
+type WorkforceMembershipRepository interface {
+	// GetWorkforceMembership returns the membership row for principalID in
+	// tenantID, or ErrWorkforceMembershipNotFound if none exists. Role-aware
+	// authorization treats "not found" and "found but not ACTIVE" as the
+	// same deny decision -- callers check Status themselves rather than
+	// this method filtering by status, so an existing-but-DISABLED
+	// membership can still be inspected (e.g. by an access-review tool)
+	// without a second, status-agnostic lookup method.
+	GetWorkforceMembership(ctx context.Context, principalID, tenantID string) (domain.WorkforceMembership, error)
+	// ListWorkforceMemberships returns every membership row for
+	// principalID, across all tenants -- the mover/leaver processes
+	// (ADR-0009 §31-36) operate over a person's whole membership set, not
+	// one tenant at a time.
+	ListWorkforceMemberships(ctx context.Context, principalID string) ([]domain.WorkforceMembership, error)
+	// CreateWorkforceMembership is the joiner action (ADR-0009 §29): an
+	// explicit, deliberate grant, never implicit. Callers mint the ID via
+	// domain.NewWorkforceMembershipID() before calling, matching every
+	// other Create* method in this package.
+	CreateWorkforceMembership(ctx context.Context, membership domain.WorkforceMembership) error
+	// SetWorkforceMembershipStatus implements the mover process's "revoke
+	// obsolete privileges" step and the leaver process's "workforce
+	// membership disabled" step (ADR-0009 §31, §33) as a status-only
+	// transition -- it never touches Roles.
+	SetWorkforceMembershipStatus(ctx context.Context, membershipID, status string) error
+	// SetWorkforceMembershipRoles implements the mover process's "grant new
+	// privileges" step (ADR-0009 §31) as an explicit role replacement on
+	// the existing membership row. A second CreateWorkforceMembership for
+	// the same (principal_id, tenant_id) is not an option: UNIQUE(
+	// principal_id, tenant_id) (migration 000032) means there is exactly
+	// one membership row per tenant a principal belongs to, so a role
+	// change updates that row in place rather than superseding it with a
+	// second one that the constraint would reject. A caller that needs a
+	// record of the specific change (not just the resulting roles)
+	// captures the before state itself first (e.g. via
+	// GetWorkforceMembership), the same pattern this package's other
+	// audited operations (LinkExternalIdentityAudited) already use.
+	SetWorkforceMembershipRoles(ctx context.Context, membershipID string, roles []string) error
+}
+
 // AuditActor identifies who performed a security-sensitive identity
 // operation (linking, unlinking, merging), for the audit record ADR-0004
 // §16/§21/§52 require alongside it. Mirrors internal/store's
@@ -377,6 +432,12 @@ type Repository struct {
 	// table's PRIMARY KEY (tenant_id, isolation_profile_id, effective_from));
 	// keyed by "tenant_id\x00isolation_profile_id\x00effective_from".
 	TenantIsolationProfiles map[string]domain.TenantIsolationProfileAssignment
+	// WorkforceMemberships is keyed by ID, mirroring the real table's
+	// primary key -- unlike ExternalIdentities' composite-key map, lookups
+	// here (GetWorkforceMembership, ListWorkforceMemberships) filter by
+	// scanning, matching this package's existing pattern for
+	// multi-valued-per-owner collections (see Mappings, Bindings).
+	WorkforceMemberships map[string]domain.WorkforceMembership
 	// LinkAudit records every LinkExternalIdentityAudited call, purely in
 	// memory (there is no real audit_events table to write to here) so
 	// tests can assert an audit entry was actually produced.
@@ -413,8 +474,21 @@ type MergeAuditRecord struct {
 	TargetPrincipalID             string
 	TransferredExternalIdentities []domain.ExternalIdentity
 	TransferredIdentityReferences []domain.IdentityReference
-	Actor                         AuditActor
-	Reason                        string
+	// TransferredWorkforceMemberships lists the source's membership rows
+	// reassigned to the target. A source membership whose tenant the
+	// target already belongs to is not transferred here (that would
+	// violate migration 000032's UNIQUE(principal_id, tenant_id)); it is
+	// disabled in place instead -- see DisabledWorkforceMemberships.
+	TransferredWorkforceMemberships []domain.WorkforceMembership
+	// DisabledWorkforceMemberships lists source membership rows that
+	// conflicted with an existing target membership for the same tenant
+	// (both principals already belonged to it) and were therefore left on
+	// the archived source principal with their status set to DISABLED,
+	// rather than transferred -- the target's own pre-existing membership
+	// for that tenant remains authoritative.
+	DisabledWorkforceMemberships []domain.WorkforceMembership
+	Actor                        AuditActor
+	Reason                       string
 }
 
 var _ MappingRepository = (*Repository)(nil)
@@ -429,6 +503,7 @@ var _ CapabilityGrantWriter = (*Repository)(nil)
 var _ CapabilityRegistryRepository = (*Repository)(nil)
 var _ CapabilityRegistryWriter = (*Repository)(nil)
 var _ IdentityRepository = (*Repository)(nil)
+var _ WorkforceMembershipRepository = (*Repository)(nil)
 var _ IdentityReferenceRepository = (*Repository)(nil)
 var _ IdentityLinkingRepository = (*Repository)(nil)
 var _ IdentityUnlinkingRepository = (*Repository)(nil)
@@ -462,6 +537,7 @@ func NewInMemoryRepository() *Repository {
 		MarketAssignments:       map[string]domain.MarketAssignment{},
 		IsolationProfiles:       map[string]domain.IsolationProfile{},
 		TenantIsolationProfiles: map[string]domain.TenantIsolationProfileAssignment{},
+		WorkforceMemberships:    map[string]domain.WorkforceMembership{},
 	}
 }
 
@@ -786,6 +862,100 @@ func (r *Repository) LinkExternalIdentity(_ context.Context, external domain.Ext
 	return nil
 }
 
+func (r *Repository) GetWorkforceMembership(_ context.Context, principalID, tenantID string) (domain.WorkforceMembership, error) {
+	if r == nil {
+		return domain.WorkforceMembership{}, errors.New("repository is nil")
+	}
+	for _, m := range r.WorkforceMemberships {
+		if m.PrincipalID == principalID && m.TenantID == tenantID {
+			return m, nil
+		}
+	}
+	return domain.WorkforceMembership{}, ErrWorkforceMembershipNotFound
+}
+
+func (r *Repository) ListWorkforceMemberships(_ context.Context, principalID string) ([]domain.WorkforceMembership, error) {
+	if r == nil {
+		return nil, errors.New("repository is nil")
+	}
+	var memberships []domain.WorkforceMembership
+	for _, m := range r.WorkforceMemberships {
+		if m.PrincipalID == principalID {
+			memberships = append(memberships, m)
+		}
+	}
+	return memberships, nil
+}
+
+func (r *Repository) CreateWorkforceMembership(_ context.Context, membership domain.WorkforceMembership) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if err := membership.Validate(); err != nil {
+		return fmt.Errorf("validate workforce membership: %w", err)
+	}
+	if membership.ID == "" {
+		return errors.New("workforce membership id is required")
+	}
+	if _, exists := r.Principals[membership.PrincipalID]; !exists {
+		return fmt.Errorf("principal %s does not exist", membership.PrincipalID)
+	}
+	if _, exists := r.WorkforceMemberships[membership.ID]; exists {
+		return fmt.Errorf("workforce membership %s already exists", membership.ID)
+	}
+	// Mirror migration 000032's UNIQUE(principal_id, tenant_id): the
+	// in-memory repository is keyed by membership ID alone, so without this
+	// scan two different IDs could otherwise both claim the same
+	// (principal, tenant) pair -- something the real Postgres constraint
+	// would reject -- and GetWorkforceMembership's first-match-wins
+	// iteration over a Go map would then return whichever one it happened
+	// to encounter first, nondeterministically.
+	for _, existing := range r.WorkforceMemberships {
+		if existing.PrincipalID == membership.PrincipalID && existing.TenantID == membership.TenantID {
+			return fmt.Errorf("workforce membership for principal %s in tenant %s already exists", membership.PrincipalID, membership.TenantID)
+		}
+	}
+	r.WorkforceMemberships[membership.ID] = membership
+	return nil
+}
+
+func (r *Repository) SetWorkforceMembershipStatus(_ context.Context, membershipID, status string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if !domain.ValidWorkforceMembershipStatus(status) {
+		return errors.New("status must be ACTIVE, SUSPENDED or DISABLED")
+	}
+	membership, ok := r.WorkforceMemberships[membershipID]
+	if !ok {
+		return ErrWorkforceMembershipNotFound
+	}
+	membership.Status = status
+	r.WorkforceMemberships[membershipID] = membership
+	return nil
+}
+
+func (r *Repository) SetWorkforceMembershipRoles(_ context.Context, membershipID string, roles []string) error {
+	if r == nil {
+		return errors.New("repository is nil")
+	}
+	if len(roles) == 0 {
+		return errors.New("at least one role is required")
+	}
+	for _, role := range roles {
+		if role == "" {
+			return errors.New("role must not be empty")
+		}
+	}
+	membership, ok := r.WorkforceMemberships[membershipID]
+	if !ok {
+		return ErrWorkforceMembershipNotFound
+	}
+	membership.Roles = roles
+	r.WorkforceMemberships[membershipID] = membership
+	return nil
+}
+
 func (r *Repository) LinkExternalIdentityAudited(ctx context.Context, external domain.ExternalIdentity, actor AuditActor, reason string) error {
 	if r == nil {
 		return errors.New("repository is nil")
@@ -867,16 +1037,52 @@ func (r *Repository) MergePrincipalsAudited(_ context.Context, sourcePrincipalID
 		transferredReferences = append(transferredReferences, reference)
 	}
 
+	// Workforce memberships (ADR-0009 §27): a source membership transfers
+	// to the target unless the target already has its own membership for
+	// that tenant, in which case transferring would create a second row
+	// for the same (principal, tenant) pair -- exactly what migration
+	// 000032's UNIQUE(principal_id, tenant_id) exists to prevent. Since
+	// requireAdminRole (api/router.go) resolves a token's issuer+subject to
+	// the target principal after the merge, an unreconciled source
+	// membership would otherwise be stranded on the now-archived source
+	// and silently lose the merged administrator's tenant access -- so a
+	// conflicting source row is disabled in place (audit-visible, not
+	// deleted) rather than left dangling, and the target's own existing
+	// membership for that tenant remains authoritative.
+	targetTenants := map[string]bool{}
+	for _, m := range r.WorkforceMemberships {
+		if m.PrincipalID == targetPrincipalID {
+			targetTenants[m.TenantID] = true
+		}
+	}
+	var transferredMemberships, disabledMemberships []domain.WorkforceMembership
+	for id, m := range r.WorkforceMemberships {
+		if m.PrincipalID != sourcePrincipalID {
+			continue
+		}
+		if targetTenants[m.TenantID] {
+			m.Status = "DISABLED"
+			r.WorkforceMemberships[id] = m
+			disabledMemberships = append(disabledMemberships, m)
+			continue
+		}
+		m.PrincipalID = targetPrincipalID
+		r.WorkforceMemberships[id] = m
+		transferredMemberships = append(transferredMemberships, m)
+	}
+
 	source.Status = "ARCHIVED"
 	r.Principals[sourcePrincipalID] = source
 
 	r.MergeAudit = append(r.MergeAudit, MergeAuditRecord{
-		SourcePrincipalID:             sourcePrincipalID,
-		TargetPrincipalID:             targetPrincipalID,
-		TransferredExternalIdentities: transferredExternal,
-		TransferredIdentityReferences: transferredReferences,
-		Actor:                         actor,
-		Reason:                        reason,
+		SourcePrincipalID:               sourcePrincipalID,
+		TargetPrincipalID:               targetPrincipalID,
+		TransferredExternalIdentities:   transferredExternal,
+		TransferredIdentityReferences:   transferredReferences,
+		TransferredWorkforceMemberships: transferredMemberships,
+		DisabledWorkforceMemberships:    disabledMemberships,
+		Actor:                           actor,
+		Reason:                          reason,
 	})
 	return nil
 }

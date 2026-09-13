@@ -41,16 +41,30 @@ type Dependencies struct {
 	// config.Config.PlatformContextTTL, which itself defaults to a bounded
 	// value rather than leaving it unset.
 	PlatformContextTTL time.Duration
+	// Identities backs requireAdminRole's tenant-scoped role check (Gate
+	// IAM-5 phase 3): resolving a "cp:tenant-admin" caller's (issuer,
+	// subject) to a canonical PrincipalID so its WorkforceMembership can be
+	// looked up. Nil is a valid zero value -- routes guarded by
+	// requireAdminRole then fail closed with 503 rather than panicking, the
+	// same shape Contexts already uses above.
+	Identities repository.IdentityRepository
+	// Memberships backs requireAdminRole's tenant-scoped role check: does
+	// the resolved principal have an ACTIVE WorkforceMembership for the
+	// tenant this request targets (ADR-0009 §27/§122). Nil is a valid zero
+	// value, matching Identities above.
+	Memberships repository.WorkforceMembershipRepository
 }
 type API struct {
 	store            store.TenantStore
 	adminVerifier    auth.TokenVerifier
 	workloadVerifier auth.TokenVerifier
 	resolution       service.ResolutionService
+	identities       repository.IdentityRepository
+	memberships      repository.WorkforceMembershipRepository
 }
 
 func New(dependencies Dependencies) http.Handler {
-	a := &API{store: dependencies.Store, adminVerifier: dependencies.AdminVerifier, workloadVerifier: dependencies.WorkloadVerifier, resolution: dependencies.Resolution}
+	a := &API{store: dependencies.Store, adminVerifier: dependencies.AdminVerifier, workloadVerifier: dependencies.WorkloadVerifier, resolution: dependencies.Resolution, identities: dependencies.Identities, memberships: dependencies.Memberships}
 	// ADR-BCP-004 §52: shared by every handler that builds a trusted
 	// Context, so the tenant/legal-entity fail-closed stages apply
 	// uniformly to /v1/resolve and /v1/platform-context/resolve alike.
@@ -61,12 +75,15 @@ func New(dependencies Dependencies) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	r.Get("/readyz", a.ready)
-	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants", a.register)
-	r.With(a.authorize(a.adminVerifier, "human", "tenant:read")).Get("/v1/tenants/{tenantID}", a.getTenant)
-	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants/{tenantID}/suspend", a.tenantLifecycleAction("suspend"))
-	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants/{tenantID}/activate", a.tenantLifecycleAction("activate"))
-	r.With(a.authorize(a.adminVerifier, "human", "tenant:write")).Post("/v1/tenants/{tenantID}/decommission", a.tenantLifecycleAction("decommission"))
-	r.With(a.authorize(a.adminVerifier, "human", "tenant:read")).Get("/v1/entitlements", a.getEntitlement)
+	// Tenant creation has no existing tenant to scope a "cp:tenant-admin"
+	// membership against (ADR-0009 §27: WorkforceMembership always names an
+	// existing Tenant), so it is platform-admin only.
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write"), a.requireAdminRole(nil, true)).Post("/v1/tenants", a.register)
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:read"), a.requireAdminRole(tenantIDFromPath, false)).Get("/v1/tenants/{tenantID}", a.getTenant)
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write"), a.requireAdminRole(tenantIDFromPath, false)).Post("/v1/tenants/{tenantID}/suspend", a.tenantLifecycleAction("suspend"))
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write"), a.requireAdminRole(tenantIDFromPath, false)).Post("/v1/tenants/{tenantID}/activate", a.tenantLifecycleAction("activate"))
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:write"), a.requireAdminRole(tenantIDFromPath, false)).Post("/v1/tenants/{tenantID}/decommission", a.tenantLifecycleAction("decommission"))
+	r.With(a.authorize(a.adminVerifier, "human", "tenant:read"), a.requireAdminRole(tenantIDFromQuery, false)).Get("/v1/entitlements", a.getEntitlement)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/context/resolve", a.resolveContext)
 	r.With(a.authorize(a.workloadVerifier, "workload", "context:resolve")).Post("/v1/resolve", ResolverHandler{Service: a.resolution, ContextResolution: contextResolution}.Resolve)
 	// ADR-BCP-004/003 Runtime APIs (issue #74 sub-work item 6), deliberately
@@ -80,12 +97,15 @@ func New(dependencies Dependencies) http.Handler {
 	// distinct scope from the workload resolve endpoints above -- see
 	// CapabilityExplainHandler's doc comment for why it deliberately is not
 	// tenant-scoped to the calling principal.
-	r.With(a.authorize(a.adminVerifier, "human", "capabilities:explain")).Post("/v1/capabilities/explain", CapabilityExplainHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Explain)
+	r.With(a.authorize(a.adminVerifier, "human", "capabilities:explain"), a.requireAdminRole(nil, true)).Post("/v1/capabilities/explain", CapabilityExplainHandler{Contexts: dependencies.Contexts, Service: a.resolution}.Explain)
+	// Canonical entities are platform-level registry resources (no tenant
+	// of their own to scope a "cp:tenant-admin" membership against), so
+	// they too are platform-admin only.
 	canonical := canonicalHandler{service: dependencies.Canonical}
-	r.With(a.authorize(a.adminVerifier, "human", "canonical:write")).Post("/v1/canonical-entities", canonical.create)
-	r.With(a.authorize(a.adminVerifier, "human", "canonical:read")).Get("/v1/canonical-entities/{entityID}", canonical.get)
+	r.With(a.authorize(a.adminVerifier, "human", "canonical:write"), a.requireAdminRole(nil, true)).Post("/v1/canonical-entities", canonical.create)
+	r.With(a.authorize(a.adminVerifier, "human", "canonical:read"), a.requireAdminRole(nil, true)).Get("/v1/canonical-entities/{entityID}", canonical.get)
 	for _, action := range []string{"validate", "activate", "suspend", "retire"} {
-		r.With(a.authorize(a.adminVerifier, "human", "canonical:write")).Post("/v1/canonical-entities/{entityID}/"+action, canonical.lifecycle(action))
+		r.With(a.authorize(a.adminVerifier, "human", "canonical:write"), a.requireAdminRole(nil, true)).Post("/v1/canonical-entities/{entityID}/"+action, canonical.lifecycle(action))
 	}
 	return r
 }
@@ -118,6 +138,96 @@ func (a *API) authorize(verifier auth.TokenVerifier, actorType, requiredScope st
 				return
 			}
 			*r = *r.WithContext(auth.WithPrincipal(r.Context(), principal))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RolePlatformAdmin and RoleTenantAdmin are the Keycloak realm roles Gate
+// IAM-5 phase 1 (baobab-iam, config/realm/baobab-realm.json) defines for
+// workforce admin access. Neither realm role carries tenant scope of its
+// own (ADR-0009 §102-104 keeps the realm-role namespace deliberately
+// small): RolePlatformAdmin authorizes every tenant, while
+// RoleTenantAdmin only authorizes a tenant the caller has an ACTIVE
+// domain.WorkforceMembership for -- requireAdminRole enforces exactly
+// that distinction.
+const (
+	RolePlatformAdmin = "cp:platform-admin"
+	RoleTenantAdmin   = "cp:tenant-admin"
+)
+
+// tenantIDFromPath and tenantIDFromQuery extract the tenant a request
+// targets, for requireAdminRole's tenant-scope check -- the two shapes
+// admin routes use today (a path parameter for tenant-specific resources,
+// a query parameter for /v1/entitlements' cross-cutting lookup).
+func tenantIDFromPath(r *http.Request) string  { return chi.URLParam(r, "tenantID") }
+func tenantIDFromQuery(r *http.Request) string { return r.URL.Query().Get("tenantId") }
+
+// requireAdminRole enforces ADR-0009's role-aware, tenant-scoped admin
+// authorization on top of authorize()'s actor-type/scope check. It must
+// run after authorize (which populates the request context's Principal):
+//
+//   - RolePlatformAdmin authorizes the request unconditionally.
+//   - platformAdminOnly true denies every other caller -- used for actions
+//     with no existing tenant to scope against (tenant creation) or that
+//     target platform-level, not tenant-level, resources (canonical
+//     entities, capability diagnostics).
+//   - Otherwise, RoleTenantAdmin authorizes the request only if the
+//     caller's canonical identity (resolved from the verified token's
+//     issuer+subject, never auto-provisioned -- ADR-0009 §29) has an
+//     ACTIVE domain.WorkforceMembership for the tenant tenantID(r) names.
+//     No realm role, or a tenant that doesn't match, or no membership at
+//     all: denied. This never widens access based on tenantID's absence --
+//     a nil/empty result from tenantID is treated as "no tenant to scope
+//     to" and denied for a tenant-admin caller, the same as
+//     platformAdminOnly.
+//
+// tenantID may be nil when platformAdminOnly is true (no tenant is ever
+// consulted in that case).
+func (a *API) requireAdminRole(tenantID func(*http.Request) string, platformAdminOnly bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			principal, ok := auth.PrincipalFromContext(r.Context())
+			if !ok {
+				problem(w, r, http.StatusForbidden, "AUTHORIZATION_DENIED", "the authenticated principal lacks required authority", false)
+				return
+			}
+			if principal.HasRole(RolePlatformAdmin) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if platformAdminOnly || !principal.HasRole(RoleTenantAdmin) {
+				problem(w, r, http.StatusForbidden, "AUTHORIZATION_DENIED", "the authenticated principal lacks required authority", false)
+				return
+			}
+			target := ""
+			if tenantID != nil {
+				target = tenantID(r)
+			}
+			if !domain.ValidTenantID(target) {
+				problem(w, r, http.StatusForbidden, "AUTHORIZATION_DENIED", "the authenticated principal lacks required authority", false)
+				return
+			}
+			if a.identities == nil || a.memberships == nil {
+				problem(w, r, http.StatusServiceUnavailable, "AUTH_VERIFIER_UNAVAILABLE", "authorization is temporarily unavailable", true)
+				return
+			}
+			// Read-only resolution, deliberately not IdentityService.Resolve:
+			// a "cp:tenant-admin" token with no matching canonical identity
+			// yet must never be auto-provisioned into one just to fail the
+			// membership check that follows -- ADR-0009 §29, mirroring the
+			// no-JIT-provisioning precedent already established for
+			// workforce membership itself.
+			caller, err := a.identities.ResolveIdentity(r.Context(), principal.Issuer, principal.Subject)
+			if err != nil {
+				problem(w, r, http.StatusForbidden, "AUTHORIZATION_DENIED", "the authenticated principal lacks required authority", false)
+				return
+			}
+			membership, err := a.memberships.GetWorkforceMembership(r.Context(), caller.ID, target)
+			if err != nil || membership.Status != "ACTIVE" {
+				problem(w, r, http.StatusForbidden, "AUTHORIZATION_DENIED", "the authenticated principal lacks required authority", false)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

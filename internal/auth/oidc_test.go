@@ -123,6 +123,46 @@ func TestOIDCVerifierRejectsNonCanonicalTenantClaim(t *testing.T) {
 	}
 }
 
+func TestOIDCVerifierExtractsRealmAccessRoles(t *testing.T) {
+	issuer := newTestIssuer(t)
+	verifier, err := NewOIDCVerifier(context.Background(), issuer.server.URL, "baobab-control-plane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := verifier.Verify(context.Background(), issuer.token(t, map[string]any{
+		"realm_access": map[string]any{"roles": []string{"cp:tenant-admin", "offline_access"}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !principal.HasRole("cp:tenant-admin") {
+		t.Fatalf("expected principal to carry cp:tenant-admin, got %#v", principal.Roles)
+	}
+	if !principal.HasRole("offline_access") {
+		t.Fatalf("expected principal to carry unrelated default realm roles too, got %#v", principal.Roles)
+	}
+	if principal.HasRole("cp:platform-admin") {
+		t.Fatalf("did not expect an unclaimed role to be present: %#v", principal.Roles)
+	}
+}
+
+func TestOIDCVerifierAcceptsTokenWithNoRealmAccessClaim(t *testing.T) {
+	issuer := newTestIssuer(t)
+	verifier, err := NewOIDCVerifier(context.Background(), issuer.server.URL, "baobab-control-plane")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Roles is a claim workload tokens and many human tokens legitimately
+	// omit entirely -- unlike Scope, its absence must not fail verification.
+	principal, err := verifier.Verify(context.Background(), issuer.token(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.HasRole("cp:platform-admin") {
+		t.Fatalf("expected no roles on a token with no realm_access claim, got %#v", principal.Roles)
+	}
+}
+
 func TestOIDCVerifierRejectsMalformedScope(t *testing.T) {
 	issuer := newTestIssuer(t)
 	verifier, err := NewOIDCVerifier(context.Background(), issuer.server.URL, "baobab-control-plane")

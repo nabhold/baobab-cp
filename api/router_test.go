@@ -290,7 +290,7 @@ func TestCapabilitiesResolveBatchRouteIsRegistered(t *testing.T) {
 }
 
 func TestCapabilitiesExplainRouteIsRegistered(t *testing.T) {
-	explainAdmin := auth.Principal{Subject: "admin-explain", ActorType: "human", TokenID: "token-explain", Scopes: map[string]struct{}{"capabilities:explain": {}}}
+	explainAdmin := auth.Principal{Subject: "admin-explain", ActorType: "human", TokenID: "token-explain", Scopes: map[string]struct{}{"capabilities:explain": {}}, Roles: map[string]struct{}{RolePlatformAdmin: {}}}
 	handler := New(Dependencies{
 		Store:         &fakeStore{},
 		AdminVerifier: fakeVerifier{principal: explainAdmin},
@@ -343,9 +343,169 @@ func (f fakeVerifier) Verify(context.Context, string) (auth.Principal, error) {
 }
 
 func adminPrincipal() auth.Principal {
-	return auth.Principal{Subject: "admin-123", ActorType: "human", TokenID: "token-123", Scopes: map[string]struct{}{"tenant:write": {}, "tenant:read": {}, "canonical:write": {}, "canonical:read": {}}}
+	return auth.Principal{Subject: "admin-123", ActorType: "human", TokenID: "token-123", Scopes: map[string]struct{}{"tenant:write": {}, "tenant:read": {}, "canonical:write": {}, "canonical:read": {}}, Roles: map[string]struct{}{RolePlatformAdmin: {}}}
 }
 
 func workloadPrincipal() auth.Principal {
 	return auth.Principal{Subject: "workload-123", ActorType: "workload", TenantID: testTenantID, ClientID: "client-123", TokenID: "token-456", Scopes: map[string]struct{}{"context:resolve": {}}}
+}
+
+// tenantAdminPrincipal is a "cp:tenant-admin" caller (Gate IAM-5 phase 3):
+// unlike adminPrincipal (platform-admin), authorization for this principal
+// depends on an ACTIVE domain.WorkforceMembership resolved from
+// Issuer/Subject, which callers populate into an in-memory
+// repository.WorkforceMembershipRepository per test case.
+func tenantAdminPrincipal() auth.Principal {
+	return auth.Principal{
+		Subject: "tenant-admin-subject", Issuer: "https://iam.nabhold.com/realms/baobab", ActorType: "human", TokenID: "token-tenant-admin",
+		Scopes: map[string]struct{}{"tenant:write": {}, "tenant:read": {}},
+		Roles:  map[string]struct{}{RoleTenantAdmin: {}},
+	}
+}
+
+// noRolePrincipal carries valid scopes but no realm role at all -- the
+// pre-Gate-IAM-5-phase-3 shape every admin caller used to have, now
+// insufficient on its own.
+func noRolePrincipal() auth.Principal {
+	return auth.Principal{Subject: "no-role-123", ActorType: "human", TokenID: "token-no-role", Scopes: map[string]struct{}{"tenant:write": {}, "tenant:read": {}, "canonical:write": {}, "canonical:read": {}}}
+}
+
+// TestRequireAdminRoleTenantScoping is Gate IAM-5 phase 3's
+// (docs/governance/gate-iam-5-workforce-sso-scope.md) coverage for
+// ADR-0009 §27/§102-104's role-aware, tenant-scoped admin authorization:
+// a "cp:platform-admin" caller reaches every tenant unconditionally; a
+// "cp:tenant-admin" caller reaches only a tenant it has an ACTIVE
+// WorkforceMembership for; a caller with no realm role at all, or a
+// tenant-admin whose membership doesn't match (wrong tenant, wrong
+// status, or missing entirely), is denied even though its OAuth scope is
+// otherwise sufficient.
+func TestRequireAdminRoleTenantScoping(t *testing.T) {
+	setup := func(t *testing.T, principal auth.Principal, seed func(repo *repository.Repository)) http.Handler {
+		t.Helper()
+		repo := repository.NewInMemoryRepository()
+		if seed != nil {
+			seed(repo)
+		}
+		return New(Dependencies{
+			Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: principal},
+			Identities: repo, Memberships: repo,
+		})
+	}
+	get := func(t *testing.T, handler http.Handler, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+
+	t.Run("platform admin reaches any tenant unconditionally", func(t *testing.T) {
+		handler := setup(t, adminPrincipal(), nil)
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusOK {
+			t.Fatalf("got status %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("tenant admin with an active membership for the target tenant is authorized", func(t *testing.T) {
+		principal := tenantAdminPrincipal()
+		handler := setup(t, principal, func(repo *repository.Repository) {
+			p := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+			mustNoError(t, repo.CreateIdentity(context.Background(), p))
+			mustNoError(t, repo.LinkExternalIdentity(context.Background(), domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: p.ID, Issuer: principal.Issuer, Subject: principal.Subject, Status: "ACTIVE"}))
+			mustNoError(t, repo.CreateWorkforceMembership(context.Background(), domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: p.ID, TenantID: testTenantID, Roles: []string{RoleTenantAdmin}, Status: "ACTIVE"}))
+		})
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusOK {
+			t.Fatalf("got status %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("tenant admin with a membership for a different tenant is denied", func(t *testing.T) {
+		principal := tenantAdminPrincipal()
+		handler := setup(t, principal, func(repo *repository.Repository) {
+			p := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+			mustNoError(t, repo.CreateIdentity(context.Background(), p))
+			mustNoError(t, repo.LinkExternalIdentity(context.Background(), domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: p.ID, Issuer: principal.Issuer, Subject: principal.Subject, Status: "ACTIVE"}))
+			mustNoError(t, repo.CreateWorkforceMembership(context.Background(), domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: p.ID, TenantID: "tn_othertenanthere", Roles: []string{RoleTenantAdmin}, Status: "ACTIVE"}))
+		})
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a membership scoped to a different tenant, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("tenant admin with a suspended membership for the target tenant is denied", func(t *testing.T) {
+		principal := tenantAdminPrincipal()
+		handler := setup(t, principal, func(repo *repository.Repository) {
+			p := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+			mustNoError(t, repo.CreateIdentity(context.Background(), p))
+			mustNoError(t, repo.LinkExternalIdentity(context.Background(), domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: p.ID, Issuer: principal.Issuer, Subject: principal.Subject, Status: "ACTIVE"}))
+			mustNoError(t, repo.CreateWorkforceMembership(context.Background(), domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: p.ID, TenantID: testTenantID, Roles: []string{RoleTenantAdmin}, Status: "SUSPENDED"}))
+		})
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a suspended membership, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("tenant admin with no membership at all is denied", func(t *testing.T) {
+		handler := setup(t, tenantAdminPrincipal(), nil)
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for no membership, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("caller with no realm role is denied despite sufficient scope", func(t *testing.T) {
+		handler := setup(t, noRolePrincipal(), nil)
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for no realm role, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("tenant creation is platform-admin only even with a matching membership", func(t *testing.T) {
+		principal := tenantAdminPrincipal()
+		repo := repository.NewInMemoryRepository()
+		p := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+		mustNoError(t, repo.CreateIdentity(context.Background(), p))
+		mustNoError(t, repo.LinkExternalIdentity(context.Background(), domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: p.ID, Issuer: principal.Issuer, Subject: principal.Subject, Status: "ACTIVE"}))
+		handler := New(Dependencies{Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: principal}, Identities: repo, Memberships: repo})
+		req := httptest.NewRequest(http.MethodPost, "/v1/tenants", strings.NewReader(`{"legal_entity_id":"THAMANI-GLOBAL","display_name":"Zuri Beans","isolation_strategy":"schema_per_tenant","residency_region":"af-south-1"}`))
+		req.Header.Set("Authorization", "Bearer token")
+		req.Header.Set("Idempotency-Key", strings.Repeat("x", 16))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a tenant-admin creating a tenant, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("canonical entities are platform-admin only even with a matching membership", func(t *testing.T) {
+		principal := tenantAdminPrincipal()
+		repo := repository.NewInMemoryRepository()
+		p := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+		mustNoError(t, repo.CreateIdentity(context.Background(), p))
+		mustNoError(t, repo.LinkExternalIdentity(context.Background(), domain.ExternalIdentity{ID: domain.NewExternalIdentityID(), PrincipalID: p.ID, Issuer: principal.Issuer, Subject: principal.Subject, Status: "ACTIVE"}))
+		mustNoError(t, repo.CreateWorkforceMembership(context.Background(), domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: p.ID, TenantID: testTenantID, Roles: []string{RoleTenantAdmin}, Status: "ACTIVE"}))
+		canonical := service.CanonicalEntityService{Repository: repository.NewCanonicalRepository()}
+		handler := New(Dependencies{Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: principal}, Identities: repo, Memberships: repo, Canonical: canonical})
+		req := httptest.NewRequest(http.MethodPost, "/v1/canonical-entities", strings.NewReader(`{"id":"entity-2","canonical_key":"tenant:product2","entity_type":"PRODUCT","display_name":"Product","authority":"baobab","classification":"INTERNAL"}`))
+		req.Header.Set("Authorization", "Bearer token")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a tenant-admin creating a canonical entity, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("requireAdminRole fails closed when Identities/Memberships are unset", func(t *testing.T) {
+		handler := New(Dependencies{Store: &fakeStore{}, AdminVerifier: fakeVerifier{principal: tenantAdminPrincipal()}})
+		if response := get(t, handler, "/v1/tenants/"+testTenantID); response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503 when Identities/Memberships are unset, got %d: %s", response.Code, response.Body.String())
+		}
+	})
+}
+
+func mustNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

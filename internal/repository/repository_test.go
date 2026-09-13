@@ -862,3 +862,185 @@ func TestInMemoryRepositoryIsolationProfilesAndAssignments(t *testing.T) {
 		t.Fatal("expected no active isolation profile assignment for an unassigned tenant")
 	}
 }
+
+// TestInMemoryRepositoryWorkforceMembership exercises Gate IAM-5 phase 3's
+// WorkforceMembershipRepository against ADR-0009 §27-32: an unknown
+// (principalID, tenantID) returns ErrWorkforceMembershipNotFound, creating
+// a membership requires an existing Principal (§29's no-JIT-provisioning
+// invariant applies here too -- a membership is never implicitly
+// materialized), a second membership for the same (principal, tenant) pair
+// is rejected even under a different id (mirroring migration 000032's
+// UNIQUE(principal_id, tenant_id) constraint, not just its own id-keyed
+// map), ListWorkforceMemberships returns every tenant a Principal belongs
+// to, SetWorkforceMembershipStatus performs a status-only mover/leaver
+// transition rather than rewriting roles, and SetWorkforceMembershipRoles
+// is the mover's actual role-replacement operation (§31-32).
+func TestInMemoryRepositoryWorkforceMembership(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	if _, err := repo.GetWorkforceMembership(ctx, "does-not-exist", "tn_zuribeans"); !errors.Is(err, ErrWorkforceMembershipNotFound) {
+		t.Fatalf("expected ErrWorkforceMembershipNotFound for unknown membership, got %v", err)
+	}
+
+	orphan := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: "does-not-exist", TenantID: "tn_zuribeans", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, orphan); err == nil {
+		t.Fatal("expected creating a membership for a nonexistent principal to be rejected")
+	}
+
+	principal := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, principal); err != nil {
+		t.Fatalf("create identity failed: %v", err)
+	}
+
+	membership := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: principal.ID, TenantID: "tn_zuribeans", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, membership); err != nil {
+		t.Fatalf("create workforce membership failed: %v", err)
+	}
+	if err := repo.CreateWorkforceMembership(ctx, membership); err == nil {
+		t.Fatal("expected duplicate membership id to be rejected")
+	}
+	samePairDifferentID := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: principal.ID, TenantID: "tn_zuribeans", Roles: []string{"cp:platform-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, samePairDifferentID); err == nil {
+		t.Fatal("expected a second membership for the same (principal, tenant) pair under a different id to be rejected")
+	}
+
+	resolved, err := repo.GetWorkforceMembership(ctx, principal.ID, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("get workforce membership failed: %v", err)
+	}
+	if resolved.Status != "ACTIVE" || !resolved.HasRole("cp:tenant-admin") {
+		t.Fatalf("unexpected resolved membership: %+v", resolved)
+	}
+
+	second := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: principal.ID, TenantID: "tn_thamani", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, second); err != nil {
+		t.Fatalf("create second workforce membership failed: %v", err)
+	}
+	memberships, err := repo.ListWorkforceMemberships(ctx, principal.ID)
+	if err != nil {
+		t.Fatalf("list workforce memberships failed: %v", err)
+	}
+	if len(memberships) != 2 {
+		t.Fatalf("expected 2 memberships, got %d: %+v", len(memberships), memberships)
+	}
+
+	// A leaver (ADR-0009 §31-32): status changes to DISABLED, but roles are
+	// left untouched -- the audit trail of what the membership once granted
+	// is preserved rather than erased.
+	if err := repo.SetWorkforceMembershipStatus(ctx, membership.ID, "DISABLED"); err != nil {
+		t.Fatalf("set workforce membership status failed: %v", err)
+	}
+	disabled, err := repo.GetWorkforceMembership(ctx, principal.ID, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("get workforce membership after status change failed: %v", err)
+	}
+	if disabled.Status != "DISABLED" || !disabled.HasRole("cp:tenant-admin") {
+		t.Fatalf("expected status-only transition, got %+v", disabled)
+	}
+
+	if err := repo.SetWorkforceMembershipStatus(ctx, "does-not-exist", "ACTIVE"); !errors.Is(err, ErrWorkforceMembershipNotFound) {
+		t.Fatalf("expected ErrWorkforceMembershipNotFound for unknown membership id, got %v", err)
+	}
+	if err := repo.SetWorkforceMembershipStatus(ctx, membership.ID, "archived"); err == nil {
+		t.Fatal("expected an unrecognized status to be rejected")
+	}
+
+	// A mover's actual privilege change (§31): SetWorkforceMembershipRoles
+	// replaces the roles on the existing row in place -- there is no valid
+	// way to instead create a second row for the same (principal, tenant)
+	// pair, per the pair-uniqueness assertion above.
+	if err := repo.SetWorkforceMembershipRoles(ctx, membership.ID, []string{"cp:platform-admin"}); err != nil {
+		t.Fatalf("set workforce membership roles failed: %v", err)
+	}
+	moved, err := repo.GetWorkforceMembership(ctx, principal.ID, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("get workforce membership after role change failed: %v", err)
+	}
+	if moved.Status != "DISABLED" || !moved.HasRole("cp:platform-admin") || moved.HasRole("cp:tenant-admin") {
+		t.Fatalf("expected roles replaced in place with status untouched, got %+v", moved)
+	}
+	if err := repo.SetWorkforceMembershipRoles(ctx, "does-not-exist", []string{"cp:platform-admin"}); !errors.Is(err, ErrWorkforceMembershipNotFound) {
+		t.Fatalf("expected ErrWorkforceMembershipNotFound for unknown membership id, got %v", err)
+	}
+	if err := repo.SetWorkforceMembershipRoles(ctx, membership.ID, nil); err == nil {
+		t.Fatal("expected empty roles to be rejected")
+	}
+}
+
+// TestInMemoryRepositoryMergeTransfersAndReconcilesWorkforceMemberships is
+// Gate IAM-5 phase 3's regression test for a review finding on
+// nabhold/baobab-cp#104: MergePrincipalsAudited transferred external
+// identities and identity references but not workforce memberships,
+// stranding an administrator's tenant access on the archived source
+// principal once its (issuer, subject) resolved to the target instead.
+// Covers both outcomes: a non-conflicting membership transfers to the
+// target, and a membership whose tenant the target already belongs to is
+// disabled in place rather than transferred (which would violate
+// UNIQUE(principal_id, tenant_id)), leaving the target's own membership
+// for that tenant authoritative.
+func TestInMemoryRepositoryMergeTransfersAndReconcilesWorkforceMemberships(t *testing.T) {
+	repo := NewInMemoryRepository()
+	ctx := context.Background()
+
+	source := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	target := domain.Principal{ID: domain.NewPrincipalID(), ActorType: "human", Status: "ACTIVE"}
+	if err := repo.CreateIdentity(ctx, source); err != nil {
+		t.Fatalf("create source identity failed: %v", err)
+	}
+	if err := repo.CreateIdentity(ctx, target); err != nil {
+		t.Fatalf("create target identity failed: %v", err)
+	}
+
+	// Non-conflicting: only the source belongs to tn_zuribeans.
+	nonConflicting := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: source.ID, TenantID: "tn_zuribeans", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, nonConflicting); err != nil {
+		t.Fatalf("create non-conflicting membership failed: %v", err)
+	}
+	// Conflicting: both source and target belong to tn_thamani.
+	conflictingSource := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: source.ID, TenantID: "tn_thamani", Roles: []string{"cp:platform-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, conflictingSource); err != nil {
+		t.Fatalf("create conflicting source membership failed: %v", err)
+	}
+	conflictingTarget := domain.WorkforceMembership{ID: domain.NewWorkforceMembershipID(), PrincipalID: target.ID, TenantID: "tn_thamani", Roles: []string{"cp:tenant-admin"}, Status: "ACTIVE"}
+	if err := repo.CreateWorkforceMembership(ctx, conflictingTarget); err != nil {
+		t.Fatalf("create conflicting target membership failed: %v", err)
+	}
+
+	if err := repo.MergePrincipalsAudited(ctx, source.ID, target.ID, AuditActor{ActorID: "admin-1"}, "duplicate account"); err != nil {
+		t.Fatalf("merge principals failed: %v", err)
+	}
+
+	// The non-conflicting membership followed the merge to the target.
+	transferred, err := repo.GetWorkforceMembership(ctx, target.ID, "tn_zuribeans")
+	if err != nil {
+		t.Fatalf("expected the non-conflicting membership to resolve under the target, got %v", err)
+	}
+	if transferred.Status != "ACTIVE" || !transferred.HasRole("cp:tenant-admin") {
+		t.Fatalf("unexpected transferred membership: %+v", transferred)
+	}
+	if _, err := repo.GetWorkforceMembership(ctx, source.ID, "tn_zuribeans"); !errors.Is(err, ErrWorkforceMembershipNotFound) {
+		t.Fatalf("expected the transferred membership to no longer resolve under the archived source, got %v", err)
+	}
+
+	// The target's own pre-existing tn_thamani membership remains
+	// authoritative and untouched by the merge.
+	authoritative, err := repo.GetWorkforceMembership(ctx, target.ID, "tn_thamani")
+	if err != nil {
+		t.Fatalf("expected the target's own membership to still resolve, got %v", err)
+	}
+	if authoritative.ID != conflictingTarget.ID || authoritative.Status != "ACTIVE" || !authoritative.HasRole("cp:tenant-admin") {
+		t.Fatalf("expected the target's pre-existing membership to remain authoritative and unchanged, got %+v", authoritative)
+	}
+
+	// The source's conflicting tn_thamani row is disabled in place, not
+	// transferred and not left dangling with an ACTIVE status under the
+	// now-archived source.
+	memberships, err := repo.ListWorkforceMemberships(ctx, source.ID)
+	if err != nil {
+		t.Fatalf("list source memberships failed: %v", err)
+	}
+	if len(memberships) != 1 || memberships[0].ID != conflictingSource.ID || memberships[0].Status != "DISABLED" {
+		t.Fatalf("expected the conflicting source membership to remain, disabled, on the archived source, got %+v", memberships)
+	}
+}
