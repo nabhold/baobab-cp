@@ -1,6 +1,6 @@
 # ADR-BCP-015 — Gate ZB-00 Capability Vocabulary Alignment, Quality-State Ownership and Roadmap Conflict Resolution
 
-**Status:** Proposed — Normative Erratum and Conflict Resolution
+**Status:** Accepted — Normative Erratum and Conflict Resolution
 **Date:** 2026-09-13
 **Decision Owners:** NABHOLD / Baobab Platform Architecture
 **Primary Repository:** `nabhold/baobab-cp`
@@ -15,7 +15,7 @@
 - ADR-BCP-012 — Intercompany and Inter-Branch Trading, Legal-Entity Relationship and Internal Settlement Model
 - ADR-BCP-013 — Canonical Inventory Ownership, Custody, Location and In-Transit Model
 - ADR-BCP-014 — Canonical Counterparty Identity, Roles and Relationships Model
-- `baobab-trade` ADR-0018 (Accepted) and its Proposed Addendum — Multi-Jurisdiction, Cross-Border and Enterprise Tax Architecture
+- `baobab-trade` ADR-0018 (Accepted) and its Accepted Addendum — Multi-Jurisdiction, Cross-Border and Enterprise Tax Architecture
 - `baobab-trade` ADR-0019 — B2B Procurement, Supplier Commercial Workflow and Trade-to-ERP Boundary Model
 - `baobab-trade` ADR-0020 — B2B Landed Cost, Margin and Commercial Price Resolution Model
 - `baobab-trade` ADR-0021 — Customs, Trade Compliance and Regulatory Provider Architecture
@@ -155,7 +155,7 @@ With CR-006, CR-007, and CR-008 applied (as pointers/errata, not rewrites):
 | Multi-Jurisdiction Tax | ADR-0018 + Addendum | none found | none found |
 | Counterparty Model | ADR-BCP-014 | none found | resolved by CR-006 |
 
-No item retains unresolved architectural ambiguity once this ADR is accepted. The remaining prerequisite is procedural, not architectural: **every ADR listed above is currently Status: Proposed** (except the base ADR-0018). Gate ZB-00's exit criterion additionally requires formal acceptance of ADR-BCP-011/012/013/014, ADR-BCP-015 (this document), the ADR-0018 Addendum, and ADR-0019/0020/0021/0022 — content readiness alone does not satisfy the gate.
+No item retains unresolved architectural ambiguity, and the procedural prerequisite is also satisfied: ADR-BCP-011/012/013/014, this document, the ADR-0018 Addendum, and ADR-0019/0020/0021/0022 are all **Status: Accepted**. Gate ZB-00's exit criterion — "no P0 architectural ambiguity remains" — is met for all ten P0 items.
 
 ---
 
@@ -165,4 +165,4 @@ No item retains unresolved architectural ambiguity once this ADR is accepted. Th
 - `nabhold/shared` carries an action item to publish the resolved capability taxonomy and event catalogue entries from §2.2 before Phase 1 (Technical Specification §88, "Programme Gate P1 — Shared Contract Foundation") schema work depending on them proceeds.
 - ADR-BCP-013 carries an action item to correct §46 per §3.3 above at acceptance time.
 - ADR-BCP-011 carries an action item to correct §93 per §4.2 above at acceptance time.
-- This ADR does not block any ADR's acceptance on its own account being merged first — the errata are additive pointers, not a rewrite dependency — but Gate ZB-00 SHALL NOT be declared closed until this ADR is itself accepted alongside the nine it amends.
+- This ADR and the nine it amends were accepted together; Gate ZB-00's architectural-freeze exit criterion is closed as of this document's acceptance.
